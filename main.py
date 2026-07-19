@@ -31,7 +31,7 @@ def run_pipeline(ticker: str, cik: str):
     filings = fetch_form4s(cik)
 
     downloaded_filings = []
-    for f in filings[:20]: 
+    for f in filings[:50]: 
         accession = f["accessionNumber"]
 
         if accession in processed_accessions:
