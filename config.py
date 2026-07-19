@@ -49,6 +49,7 @@ CIKS = {
     "GE": "0000040545",
 } 
 
-TEMP_DIR = Path(r"C:\Users\Usuario\Desktop\code\follow_the_money\temp_xml_storage")
+PROJECT_DIR = Path(__file__).parent
 
-OUTPUT_DIR = Path(r"C:\Users\Usuario\Desktop\code\follow_the_money\data\parquet")
+TEMP_DIR = PROJECT_DIR / "temp_xml_storage"
+OUTPUT_DIR = PROJECT_DIR / "data" / "parquet"
