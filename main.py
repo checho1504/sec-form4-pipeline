@@ -2,13 +2,12 @@
 # runs the whole pipeline
 
 import pandas as pd
-from processed_filings import load_processed_accessions, mark_accession_processed
+from processed_filings import load_processed_accessions, mark_accession_processed, save_processed_accessions
 from config import CIKS, TEMP_DIR
 from fetcher import fetch_form4s, download_xml
 from parser import parse_form4
 from transform import clean_dataframe
 from storage import write_parquet, upload_to_r2
-
 
 # Make sure the temp folder exists before saving XML files.
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -93,3 +92,5 @@ if __name__ == "__main__":
     # Run the pipeline for every ticker in the config file.
     for ticker, cik in CIKS.items():
         run_pipeline(ticker, cik)
+
+    save_processed_accessions() #uploads back to R2 after all tickers finish

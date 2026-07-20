@@ -1,0 +1,6 @@
+.env
+__pycache__/
+data/
+temp_xml_storage/
+tempCodeRunnerFile.py
+processed_accession.txt
