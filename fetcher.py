@@ -1,9 +1,10 @@
 import requests
 from pathlib import Path
-from config import HEADERS, TEMP_DIR
+from config import HEADERS
+import time
 
 def fetch_form4s(cik: str) -> list: #returns a list of form 4 forms
-    r = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json", headers=HEADERS)
+    r = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json", headers=HEADERS, timeout=30)
     data = r.json()
     recent = data["filings"]["recent"]
 
@@ -34,15 +35,27 @@ def build_xml_url(cik: str, accession: str, primary_doc: str) -> str: # this fun
 
 def download_xml(filing: dict, cik: str, dest_dir: Path) -> Path | None:
     filing["xml_url"] = build_xml_url(cik, filing["accessionNumber"], filing["primaryDocument"])
-    xml_r = requests.get(filing["xml_url"], headers=HEADERS)
-    print(filing["accessionNumber"], xml_r.status_code)
+    
+    #adding a delay between requests
+    try:
+        time.sleep(0.25)
+        xml_r = requests.get(filing["xml_url"], headers=HEADERS, timeout=30)
+        print(filing["accessionNumber"], xml_r.status_code)
+
+    except requests.exceptions.RequestException as e:
+        print(f"SEC request failed for {filing['accessionNumber']}: {e}")
+        return None
+
 
     if xml_r.status_code == 200 and "<ownershipDocument>" in xml_r.text:
         file_path = dest_dir / f"{filing['accessionNumber']}.xml"
+
         with open(file_path, "w", encoding="utf-8") as file:
             file.write(xml_r.text)
+
         print(f"Saved XML to: {file_path.resolve()}")
         return file_path
+        
     else:
         print(f"Skipped: {filing['accessionNumber']}")
         return None
