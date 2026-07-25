@@ -17,17 +17,17 @@ def get_r2_client():
     )
 
 #this function saves the dataframe in parque format
-def write_parquet(df, ticker: str) -> Path:
+def write_parquet(df, ticker: str, dataset: str = "form4") -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = OUTPUT_DIR / f"form4_{ticker.lower()}.parquet"
+    output_path = OUTPUT_DIR / f"{dataset}_{ticker.lower()}.parquet"
     df.to_parquet(output_path, index=False)
     print(f"Parquet saved to: {output_path.resolve()}")
     return output_path
 
 
-def upload_to_r2(local_path: Path, ticker: str):
+def upload_to_r2(local_path: Path, ticker: str, dataset: str = "form4"):
     bucket = env.get("R2_BUCKET_NAME")
-    r2_key = f"form4/ticker={ticker}/{local_path.name}"
+    r2_key = f"{dataset}/ticker={ticker}/{local_path.name}"
     client = get_r2_client()
     client.upload_file(str(local_path), bucket, r2_key)
     print(f"Uploaded to R2: {r2_key}")

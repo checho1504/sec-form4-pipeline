@@ -30,7 +30,7 @@ for ticker in CIKS:
         all_dfs.append(df)
     
     except Exception as e:
-        print(f"Could not load ticke: {e}")
+        print(f"Could not load {ticker}: {e}")
 
 
 # combining into a single df
@@ -39,6 +39,10 @@ if not all_dfs:
     print("No data loaded")
 else:
     combined = pd.concat(all_dfs, ignore_index=True)
+
+    pd.set_option("display.max_columns", None)
+    pd.set_option("display.width", 200)
+    pd.set_option("display.max_colwidth", 40)
 
     print(f"\nTotal rows: {len(combined)}")
     print(f"Tickers: {combined['issuer_ticker'].unique().tolist()}")
@@ -53,5 +57,6 @@ else:
         "transaction_price_per_share",
         "transaction_value",
     ]].head(100))
+
 
     combined.info()
