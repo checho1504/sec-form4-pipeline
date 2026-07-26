@@ -4,12 +4,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 import pandas as pd
 from config import CIKS
+from storage import write_parquet, upload_to_r2
 
 PROJECT_DIR = Path(__file__).parent
 load_dotenv(PROJECT_DIR / ".env")
 
 
-def fetch_daily_prices(ticker: str, start_date: str, end_date: str | None = None):
+def fetch_daily_prices(ticker: str, start_date: str, end_date: str | None = None) -> pd.DataFrame:
     headers = {
         'Content-Type': 'application/json',
         'Authorization': f"Token {os.getenv('TIINGO_API_KEY')}"
@@ -64,18 +65,26 @@ if __name__ == "__main__":
     for t in CIKS:
         print(f"Fetching prices for {t}...")
 
-        df = fetch_daily_prices(ticker=t, start_date="2024-01-01", end_date="2024-01-31")
+        df = fetch_daily_prices(ticker=t, start_date="2022-01-01", end_date=None)
 
         if df.empty:
             print(f"No price data found for {t}")
             continue
 
+       # saving prices as parquet
+
+        parquet_path = write_parquet(df, t, dataset="prices")
+
+        upload_to_r2(parquet_path, t, dataset="prices")
+
         all_dfs.append(df)
-        print(f"Got {len(df)} rows")
+        print(f"got {len(df)} rows")
 
-    # Stacking everythong into a ssingle DataFrame
+    if not all_dfs:
+        print("No price data loaded")
+    else:
+        combined_prices = pd.concat(all_dfs, ignore_index=True)
+        print(f"\nTotal price rows: {len(combined_prices)}")
+        print(combined_prices.head())
+        print(combined_prices.tail(20))
 
-    combined_prices = pd.concat(all_dfs, ignore_index=True)
-    print(f"\nTotal price rows: {len(combined_prices)}")
-    print(combined_prices.head())
-    print(combined_prices.tail(20))

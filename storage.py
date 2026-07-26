@@ -14,6 +14,7 @@ def get_r2_client():
         endpoint_url=env.get("R2_ENDPOINT_URL"),
         aws_access_key_id=env.get("R2_ACCESS_KEY_ID"),
         aws_secret_access_key=env.get("R2_SECRET_ACCESS_KEY"),
+        region_name = 'auto',
     )
 
 #this function saves the dataframe in parque format
