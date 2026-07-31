@@ -4,7 +4,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 import pandas as pd
 from config import CIKS
-from storage import write_parquet, upload_to_r2
+import io
+from storage import write_parquet, upload_to_r2, get_r2_client
 
 PROJECT_DIR = Path(__file__).parent
 load_dotenv(PROJECT_DIR / ".env")
@@ -58,6 +59,78 @@ def fetch_daily_prices(ticker: str, start_date: str, end_date: str | None = None
 
     return df
 
+def inspect_r2data() -> pd.DataFrame:
+    """this checks whether price and form4 data exists in R2"""
+
+    client = get_r2_client()
+    bucket = os.getenv("R2_BUCKET_NAME")
+
+    rows = [] 
+
+    for ticker in CIKS:
+        price_key = f"prices/ticker={ticker}/prices_{ticker.lower().parquet}" 
+        form4_key = f"form4/ticker={ticker}/form4_{ticker.lower().parquet}"
+
+        price_rows = 0
+        price_min_date = None
+        price_max_date = None
+
+        form4_rows = 0
+        form4_min_filing_date = None
+        form4_max_filing_date = None
+        open_market_purchases = 0
+
+        try:
+            price_response = client.get_object(Bucket=bucket, Key=price_key)
+            price_bytes = price_response["Body"].read()
+            price_df = pd.read_parquet(io.BytesIO(price_bytes))
+
+            price_rows = len(price_df)
+            price_min_date = price_df["date"].min()
+            price_max_date = price_df["date"].max()
+
+        except Exception as e:
+            print(f"No price data for {ticker}: {e}")
+
+        try:
+            form4_response = client.get_object(Bucket=bucket, Key=form4_key)
+            form4_bytes = form4_response["Body"].read()
+            form4_df = pd.read_parquet(io.BytesIO(form4_bytes))
+
+            form4_rows = len(form4_df)
+            form4_min_filing_date = form4_df["filing_date"].min()
+            form4_max_filing_date = form4_df["filing_date"].max()
+
+            open_market_purchases = len(form4_df[(form4_df["transaction_code"] == "P") # purchase 
+                    & (form4_df["transaction_acquired_disposed_code"] == "A")
+                    & (form4_df["transaction_price_per_share"] > 0)
+                ])
+
+        except Exception as e:
+            print(f"No Form 4 data for {ticker}: {e}")
+
+        rows.append({
+            "ticker": ticker,
+            "price_rows": price_rows, 
+            "price_min_date": price_min_date, 
+            "price_max_date": price_max_date, 
+            "form4_rows": form4_rows, 
+            "form4_min_filing_date": form4_min_filing_date, 
+            "form4_max_filing_date": form4_max_filing_date, 
+            "open_market_purchases": open_market_purchases,
+        })
+
+    summary_df = pd.DataFrame(rows)
+
+    print("\nR2 data health check:")
+    print(summary_df)
+
+    summary_df.to_csv("r2_data_health_check.csv", index=False)
+    print("\nSaved r2_data_health_check.csv")
+
+    return summary_df 
+
+
 
 if __name__ == "__main__":
     all_dfs = []
@@ -70,9 +143,7 @@ if __name__ == "__main__":
         if df.empty:
             print(f"No price data found for {t}")
             continue
-
-       # saving prices as parquet
-
+         
         parquet_path = write_parquet(df, t, dataset="prices")
 
         upload_to_r2(parquet_path, t, dataset="prices")
