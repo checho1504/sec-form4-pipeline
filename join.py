@@ -2,8 +2,8 @@
 Market data overlay.
 
 This script joins Form 4 insider transaction data with daily market price data.
-It uses filing_date instead of transaction_date to reduce lookahead bias.
-It uses adjusted prices to account for stock splits and dividends.
+It uses adjusted prices to account for stock splits and dividends. It also uses price data for the next available 
+trading day to account for days when market is closed. Best for forward-return analysis. 
 
 Output: an event-level dataset for later forward-return analysis.
 """
@@ -19,12 +19,21 @@ def join_form4_prices(form4_df: pd.DataFrame, price_df: pd.DataFrame, date_col: 
     form4[date_col] = pd.to_datetime(form4[date_col])
     prices["date"] = pd.to_datetime(prices["date"])
 
+    #sorting keys
 
-    merged = form4.merge(prices, 
-                         left_on=["issuer_ticker", date_col],
-                         right_on=["ticker", "date"],
-                         how="left"
-                        )
+    form4 = form4.sort_values(date_col)
+    prices = prices.sort_values("date")
+
+ 
+    merged = pd.merge_asof(form4,                      #chooses the closest date as opposed to the exact date match
+                           prices,                               
+                           left_on=date_col,
+                           right_on="date",
+                           left_by="issuer_ticker",
+                           right_by="ticker",
+                           direction="forward",
+                           tolerance=pd.Timedelta("5D"),
+    )
     return merged
 
 if __name__ == "__main__":
