@@ -36,6 +36,8 @@ def join_form4_prices(form4_df: pd.DataFrame, price_df: pd.DataFrame, date_col: 
     )
     return merged
 
+
+
 if __name__ == "__main__":
     ticker = "AAPL"
 
@@ -51,19 +53,42 @@ if __name__ == "__main__":
         date_col="filing_date",
     )
 
+
+
+    #checking for missing price matches
+
+    missing_price_matches = joined_df['adjClose'].isna().sum()
+    matched_price_rows = joined_df["adjClose"].notna().sum()
+    total_rows = len(joined_df)
+
+    # check if any filings were matched to a future trading date
+
+    joined_df['price_lag_days'] = (joined_df['date'] - joined_df['filing_date']).dt.days
+
+    #renaming columns
+    joined_df = joined_df.rename(columns={
+        "date": "event_price_date",
+        "adjClose": "event_adj_close",
+        "volume": "event_volume",
+    })
+
     print(f"Form 4 rows: {len(form4_df)}")
     print(f"Price rows: {len(price_df)}")
     print(f"Joined rows: {len(joined_df)}")
 
+    print(f"missing price matches: {missing_price_matches}")
+    print(f"Matched price rows: {matched_price_rows}/{total_rows}")   
+
     print(joined_df[[
-        "issuer_ticker",
-        "accession_number",
-        "filing_date",
-        "transaction_date",
-        "reporting_owner_name",
-        "transaction_code",
-        "transaction_value",
-        "date",
-        "adjClose",
-        "volume",
-    ]].head(20))
+    "issuer_ticker",
+    "accession_number",
+    "filing_date",
+    "transaction_date",
+    "reporting_owner_name",
+    "transaction_code",
+    "transaction_value",
+    "event_price_date",
+    "event_adj_close",
+    "event_volume",
+    "price_lag_days",
+]].head(20))
