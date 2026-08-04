@@ -9,7 +9,6 @@ Output: an event-level dataset for later forward-return analysis.
 """
 
 import pandas as pd
-from pathlib import Path
 from config import OUTPUT_DIR
 
 def join_form4_prices(form4_df: pd.DataFrame, price_df: pd.DataFrame, date_col: str = "filing_date") -> pd.DataFrame:
@@ -39,56 +38,82 @@ def join_form4_prices(form4_df: pd.DataFrame, price_df: pd.DataFrame, date_col: 
 
 
 if __name__ == "__main__":
-    ticker = "AAPL"
+    from config import CIKS
+    from storage import write_parquet, upload_to_r2
 
-    form4_path = OUTPUT_DIR / f"form4_{ticker.lower()}.parquet"
-    price_path = OUTPUT_DIR / f"prices_{ticker.lower()}.parquet"
+    all_joined = []
 
-    form4_df = pd.read_parquet(form4_path)
-    price_df = pd.read_parquet(price_path)
+    for ticker in CIKS:
+        form4_path = OUTPUT_DIR / f"form4_{ticker.lower()}.parquet"
+        price_path = OUTPUT_DIR / f"prices_{ticker.lower()}.parquet"
+        if not form4_path.exists() or not price_path.exists():
+            print(f"Skipping {ticker}: missing form4 or price parquet")
+            continue
 
-    joined_df = join_form4_prices(
-        form4_df=form4_df,
-        price_df=price_df,
-        date_col="filing_date",
+        form4_df = pd.read_parquet(form4_path)
+        price_df = pd.read_parquet(price_path)
+
+        #keep the rows where the issuer ticker matches the ticker being processed.
+
+        form4_df["issuer_ticker"] = form4_df["issuer_ticker"].astype(str).str.upper()
+        bad_rows = form4_df[form4_df["issuer_ticker"] !=  ticker]
+
+        if not bad_rows.empty:
+              print(f"Dropping{len(bad_rows)} not expected for: {ticker}")
+              print(bad_rows["issuer_ticker"].value_counts())
+
+        form4_df = form4_df[form4_df["issuer_ticker"] ==  ticker].copy()
+
+        if form4_df.empty:
+              print(f"Skipping {ticker}: no matching Form 4 rows after ticker filter")
+              continue
+
+        joined_df = join_form4_prices(form4_df=form4_df, price_df=price_df, date_col="filing_date",
     )
 
+        #checking for missing price matches
 
+        missing_price_matches = joined_df['adjClose'].isna().sum()
+        matched_price_rows = joined_df["adjClose"].notna().sum()
+        total_rows = len(joined_df)
 
-    #checking for missing price matches
+        # check if any filings were matched to a future trading date
 
-    missing_price_matches = joined_df['adjClose'].isna().sum()
-    matched_price_rows = joined_df["adjClose"].notna().sum()
-    total_rows = len(joined_df)
-
-    # check if any filings were matched to a future trading date
-
-    joined_df['price_lag_days'] = (joined_df['date'] - joined_df['filing_date']).dt.days
-
-    #renaming columns
-    joined_df = joined_df.rename(columns={
+        joined_df['price_lag_days'] = (joined_df['date'] - joined_df['filing_date']).dt.days
+    
+        #renaming columns
+        joined_df = joined_df.rename(columns={
         "date": "event_price_date",
         "adjClose": "event_adj_close",
         "volume": "event_volume",
     })
 
-    print(f"Form 4 rows: {len(form4_df)}")
-    print(f"Price rows: {len(price_df)}")
-    print(f"Joined rows: {len(joined_df)}")
+        parquet_path = write_parquet(joined_df, ticker, dataset="events")
+        upload_to_r2(parquet_path, ticker, dataset="events")
 
-    print(f"missing price matches: {missing_price_matches}")
-    print(f"Matched price rows: {matched_price_rows}/{total_rows}")   
+        all_joined.append(joined_df)
 
-    print(joined_df[[
-    "issuer_ticker",
-    "accession_number",
-    "filing_date",
-    "transaction_date",
-    "reporting_owner_name",
-    "transaction_code",
-    "transaction_value",
-    "event_price_date",
-    "event_adj_close",
-    "event_volume",
-    "price_lag_days",
-]].head(20))
+    if all_joined:
+                combined = pd.concat(all_joined, ignore_index=True)
+                print(f"\nTotal joined rows across all tiickers: {len(combined)}")
+                print(f"Form 4 rows: {len(combined)}")
+                print(f"missing price matches: {combined['event_adj_close'].isna().sum()}")
+                print(f"Matched price rows: {combined['event_adj_close'].notna().sum()}/{len(combined)}")   
+
+                missing = combined[combined["event_adj_close"].isna()]
+                print(missing["issuer_ticker"].value_counts())
+                print(missing[["issuer_ticker", "filing_date"]].sort_values("filing_date"))
+    
+                print(combined[[
+                "issuer_ticker",
+                "accession_number",
+                "filing_date",
+                "transaction_date",
+                "reporting_owner_name",
+                "transaction_code",
+                "transaction_value",
+                "event_price_date",
+                "event_adj_close",
+                "event_volume",
+                "price_lag_days",
+                ]].head(30))

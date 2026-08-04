@@ -20,6 +20,8 @@ def parse_form4(xml_path: Path) -> list:
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
+    #compare CIK with issuer_cik, if no match, dont pass it to rows
+
     print(f"Parsing {xml_path.name}  root=<{root.tag}>")
 
     schema_version           = get_text(root, "schemaVersion")
@@ -28,7 +30,7 @@ def parse_form4(xml_path: Path) -> list:
     not_subject_to_section16 = get_text(root, "notSubjectToSection16")
 
     issuer        = root.find("issuer")
-    issuer_cik    = get_text(issuer, "issuerCik")
+    issuer_cik    = get_text(issuer, "issuerCik")   
     issuer_name   = get_text(issuer, "issuerName")
     issuer_ticker = get_text(issuer, "issuerTradingSymbol")
 
@@ -48,7 +50,7 @@ def parse_form4(xml_path: Path) -> list:
 
     non_derivative_table = root.find("nonDerivativeTable")
     if non_derivative_table is None:
-        print(f"  ⚠ No nonDerivativeTable in {xml_path.name}, skipping")
+        print(f" No nonDerivativeTable in {xml_path.name}, skipping")
         return []
 
     rows = []
