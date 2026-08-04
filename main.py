@@ -68,7 +68,7 @@ def run_pipeline(ticker: str, cik: str):
 
     cik = str(cik).zfill(10) #CIK is a 10-digit number
     df["issuer_cik"] = df["issuer_cik"].astype(str).str.zfill(10)
-    df["issuer_ticker"] = df["issuer_ticker"].astype(str).str.upper()
+    df["issuer_ticker"] = df["issuer_ticker"].astype(str).str.upper().str.replace(".", "-", regex=False)
 
     bad_rows = df[df["issuer_cik"] != cik] 
 
@@ -118,7 +118,9 @@ def run_pipeline(ticker: str, cik: str):
 
 if __name__ == "__main__":
     # Run the pipeline for every ticker in the config file.
-    for ticker, cik in CIKS.items():
-        run_pipeline(ticker, cik)
+    try:
+        for ticker, cik in CIKS.items():
+            run_pipeline(ticker, cik)
 
-    save_processed_accessions() #uploads back to R2 after all tickers finish
+    finally:
+        save_processed_accessions() #uploads back to R2 after all tickers finish

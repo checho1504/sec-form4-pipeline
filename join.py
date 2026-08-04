@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
         #keep the rows where the issuer ticker matches the ticker being processed.
 
-        form4_df["issuer_ticker"] = form4_df["issuer_ticker"].astype(str).str.upper()
+        form4_df["issuer_ticker"] = form4_df["issuer_ticker"].astype(str).str.upper().str.replace(".", "-", regex=False)
         bad_rows = form4_df[form4_df["issuer_ticker"] !=  ticker]
 
         if not bad_rows.empty:

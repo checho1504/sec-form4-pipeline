@@ -1,13 +1,13 @@
 from pathlib import Path
+from sp500_ciks import CIKS_SP500_ALL
 
 HEADERS = {
     "User-Agent": "FollowTheMoney velasus99@gmail.com",
     "Accept": "application/json"
 }
 
-#unique identifiers set by the SEC
-
-CIKS = {
+# initial CIK (SEC identifier numbers) list
+CIKS_CORE = {
     # Mega-Cap Tech
     "NVDA": "0001045810",
     "AAPL": "0000320193",
@@ -24,7 +24,7 @@ CIKS = {
     "MS": "0000895421",
     "V": "0001403161",
     "MA": "0001141391",
-    "PYPL": "0001633917",   
+    "PYPL": "0001633917",
     "COIN": "0001679788",
 
     # Healthcare
@@ -47,9 +47,17 @@ CIKS = {
     "CAT": "0000018230",
     "BA": "0000012927",
     "GE": "0000040545",
-} 
+}
+
+CIKS_SP500_100 = dict(list(CIKS_SP500_ALL.items())[:100])
+
+
+CIKS = {
+    ticker: cik
+    for ticker, cik in CIKS_SP500_100.items()
+    if ticker not in CIKS_CORE
+}
 
 PROJECT_DIR = Path(__file__).parent
-
 TEMP_DIR = PROJECT_DIR / "temp_xml_storage"
 OUTPUT_DIR = PROJECT_DIR / "data" / "parquet"
