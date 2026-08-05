@@ -11,6 +11,12 @@ Output: an event-level dataset for later forward-return analysis.
 import pandas as pd
 from config import OUTPUT_DIR
 
+TICKER_ALIASES = { 
+    "GOOG": ["GOOG", "GOOGL"],
+    "BNY": ["BNY", "BK"],
+    "BF-B": ["BF-B", "BFA", "BFB", "BFA, BFB"],
+}
+
 def join_form4_prices(form4_df: pd.DataFrame, price_df: pd.DataFrame, date_col: str = "filing_date") -> pd.DataFrame:
     form4 = form4_df.copy()
     prices = price_df.copy()
@@ -28,8 +34,8 @@ def join_form4_prices(form4_df: pd.DataFrame, price_df: pd.DataFrame, date_col: 
                            prices,                               
                            left_on=date_col,
                            right_on="date",
-                           left_by="issuer_ticker",
-                           right_by="ticker",
+                           left_by="join_ticker",
+                           right_by="join_ticker",
                            direction="forward",
                            tolerance=pd.Timedelta("5D"),
     )
@@ -53,23 +59,26 @@ if __name__ == "__main__":
         form4_df = pd.read_parquet(form4_path)
         price_df = pd.read_parquet(price_path)
 
-        #keep the rows where the issuer ticker matches the ticker being processed.
+        # Keep rows where SEC issuer ticker is acceptable for the ticker being processed
 
-        form4_df["issuer_ticker"] = form4_df["issuer_ticker"].astype(str).str.upper().str.replace(".", "-", regex=False)
-        bad_rows = form4_df[form4_df["issuer_ticker"] !=  ticker]
+        form4_df["issuer_ticker"] = (form4_df["issuer_ticker"]).astype(str).str.upper().str.replace(".","-", regex=False)
+        expected_tickers = TICKER_ALIASES.get(ticker, [ticker])
+        bad_rows = form4_df[~form4_df["issuer_ticker"].isin(expected_tickers)]
 
         if not bad_rows.empty:
-              print(f"Dropping{len(bad_rows)} not expected for: {ticker}")
-              print(bad_rows["issuer_ticker"].value_counts())
-
-        form4_df = form4_df[form4_df["issuer_ticker"] ==  ticker].copy()
+            print(f"Dropping {len(bad_rows)} not expected for {ticker}")
+            print(bad_rows["issuer_ticker"].value_counts())
+        form4_df = form4_df[form4_df["issuer_ticker"].isin(expected_tickers)].copy()
 
         if form4_df.empty:
-              print(f"Skipping {ticker}: no matching Form 4 rows after ticker filter")
-              continue
+            print(f"skipping {ticker}: no matching Form 4 rows after filtering")
+            continue 
+
+        form4_df["join_ticker"] = ticker
+        price_df["join_ticker"] = ticker
 
         joined_df = join_form4_prices(form4_df=form4_df, price_df=price_df, date_col="filing_date",
-    )
+                                      )
 
         #checking for missing price matches
 

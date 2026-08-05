@@ -27,9 +27,9 @@ def fetch_form4s(cik: str, start_date: str = FORM4_START_DATE) -> list: #returns
     recent_filings = extract_filings(data["filings"]["recent"])
     all_filings.extend(recent_filings)
 
-    # older paginated filing files
+    # Getting old files as well
 
-    older_files = data["filings"].get("files", []) 
+    older_files = data["filings"].get("files", []) # empty list because certain companies with a short filling history may not have the "file" key
 
     for file_info in older_files:
         file_name = file_info["name"]
@@ -68,7 +68,7 @@ def build_xml_url(cik: str, accession: str, primary_doc: str) -> str: # this fun
 def download_xml(filing: dict, cik: str, dest_dir: Path) -> Path | None:
     filing["xml_url"] = build_xml_url(cik, filing["accessionNumber"], filing["primaryDocument"])
     
-    #adding a delay between requests
+
     try:
         time.sleep(0.25)
         xml_r = requests.get(filing["xml_url"], headers=HEADERS, timeout=30)
@@ -79,7 +79,7 @@ def download_xml(filing: dict, cik: str, dest_dir: Path) -> Path | None:
         return None
 
 
-    if xml_r.status_code == 200 and "<ownershipDocument>" in xml_r.text:
+    if xml_r.status_code == 200 and "<ownershipDocument>" in xml_r.text: # this means we got the expected result from the server and the doc we wanted
         file_path = dest_dir / f"{filing['accessionNumber']}.xml"
 
         with open(file_path, "w", encoding="utf-8") as file:
