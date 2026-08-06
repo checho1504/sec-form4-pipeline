@@ -273,9 +273,10 @@ if __name__ == "__main__":
         
         print(event_returns_df[return_cols].describe())
         print("\nMedian returns:")
-        print(event_returns_df[return_cols].median())
-        print("\nWin rates:")
-        print((event_returns_df[return_cols] > 0).mean())
+        print("\nWin rates excluding NaN:")
+        print(event_returns_df[return_cols].apply(lambda col: (col.dropna() > 0).mean()))
+        
+        print((event_returns_df[return_cols] > 0).mean())  
 
 
 
