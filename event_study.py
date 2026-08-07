@@ -94,51 +94,6 @@ def count_duplicate_purchase_rows(purchase_events: pd.DataFrame) -> int:
 
     return duplicate_count
 
-def get_forward_return(price_df: pd.DataFrame, event_date, ticker:str, horizon_days: int, ) -> float | None:
-    """% change in adjClose from event date to trading day horizon date
-    """
-    event_date = pd.to_datetime(event_date)
-
-    # no events returns none
-
-    if pd.isna(event_date):
-        return None
-
-    ticker_prices = price_df[price_df["join_ticker"] == ticker].copy()
-
-    if ticker_prices.empty:
-        return None
-
-    ticker_prices["date"] = pd.to_datetime(ticker_prices["date"])
-
-    # Drop NaT or missing adjclose before sorting
-
-    ticker_prices = ticker_prices.dropna(subset=["date","adjClose"])
-
-    if ticker_prices.empty:
-        return None
-
-    ticker_prices = ticker_prices.sort_values("date")
-    dates = ticker_prices["date"].to_numpy()
-    closes = ticker_prices["adjClose"].to_numpy(dtype="float64")
-    event_date_np = np.datetime64(event_date)
-
-    start_idx = np.searchsorted(dates, event_date_np, side="left")
-    if start_idx >= len(dates):
-        return None # event after price date
-
-    end_idx = start_idx + horizon_days
-    if end_idx >= len(dates):
-        return None #not enough future trading days yet
-
-    start_price = closes[start_idx]
-    end_price = closes[end_idx]
-
-    if start_price == 0:
-        return None
-
-    return(end_price / start_price) - 1
-
 
 def _build_price_index(prices_df: pd.DataFrame) -> dict:
     """Pre-sorts price data per ticker into numpy arrays for fast
@@ -206,6 +161,36 @@ ticker_col: str = "join_ticker") -> pd.DataFrame:
 
     return events
 
+def sumarize_returns_by_transaction_code(event_returns_df: pd.DataFrame, horizons: list[int] = [1, 5, 20, 60, 90],) -> pd.DataFrame:
+    """summarize by transaction code"""
+    summary_rows = []
+    for h in horizons:
+        col = f"fwd_return_{h}d"
+
+        summary = (event_returns_df.groupby("transaction_code")[col].agg(valid_return_count="count",
+                                                                         mean_return="mean",
+                                                                         median_return="median",
+                                                                         )
+                                                                         .reset_index()
+                                                                         )
+        summary["horizon_days"] = h
+        summary["mean_return_pct"] = summary["mean_return"] * 100
+        summary["median_return_pct"] = summary["median_return"] * 100
+
+        summary_rows.append(
+            summary[
+                [
+                    "transaction_code",
+                    "horizon_days",
+                    "valid_return_count",
+                    "mean_return_pct",
+                    "median_return_pct",
+                ]
+            ]
+        )
+
+    return pd.concat(summary_rows, ignore_index=True)
+
 
         
 if __name__ == "__main__":
@@ -246,7 +231,25 @@ if __name__ == "__main__":
         "price_lag_days",
     ]].tail(30))
 
-  #  Phase 3A: forward returns, full purchase-event dataset ---
+  # forward return by transaction code
+
+    all_event_tickers = events_df["join_ticker"].unique().tolist()  
+    all_event_prices_df = load_prices_from_r2(tickers=all_event_tickers)
+    if all_event_prices_df.empty:
+        print("No data loaded. Cannot summarize return by transaction code")
+    else:
+
+        all_event_returns_df = build_event_returns(events_df, all_event_prices_df, horizons=[1, 5, 20, 60, 90],)
+        transaction_code_summary = sumarize_returns_by_transaction_code(all_event_returns_df, horizons=[1, 5, 20, 60, 90])
+
+        print("\nForward returns by transaction code:")
+        print(
+            transaction_code_summary
+            .sort_values(["transaction_code", "horizon_days"])
+            .round(2)
+        )
+
+  # forward returns, full purchase-event dataset 
 
     all_purchase_tickers = purchase_events["join_ticker"].unique().tolist()
     print(f"\nLoading price data for {len(all_purchase_tickers)} tickers with purchase events...")
@@ -269,16 +272,71 @@ if __name__ == "__main__":
             col = f"fwd_return_{h}d"
             print(f"{col}: {event_returns_df[col].isna().sum()} / {len(event_returns_df)}")
 
-        return_cols = [f"fwd_return_{h}d" for h in [1, 5, 20, 60, 90]] #horizon periods
-        
-        print(event_returns_df[return_cols].describe())
-        print("\nMedian returns:")
+        return_cols = [f"fwd_return_{h}d" for h in [1, 5, 20, 60, 90]]
+
+        p_only_summary = pd.DataFrame({
+        "horizon_days": [1, 5, 20, 60, 90],
+        "valid_return_count": [event_returns_df[f"fwd_return_{h}d"].count() for h in [1, 5, 20, 60, 90]],
+        "mean_return_pct": [event_returns_df[f"fwd_return_{h}d"].mean() * 100 for h in [1, 5, 20, 60, 90]],
+        "median_return_pct": [event_returns_df[f"fwd_return_{h}d"].median() * 100 for h in [1, 5, 20, 60, 90]],
+        "win_rate_pct": [
+            (event_returns_df[f"fwd_return_{h}d"].dropna() > 0).mean() * 100
+            for h in [1, 5, 20, 60, 90]
+        ],
+    })
+
+        print("\nP-only forward return summary:")
+        print(p_only_summary.round(2))
+
+        print("\nForward return summary:")
+        summary_stats = event_returns_df[return_cols].describe()
+
+        rows_to_percent = summary_stats.index != "count"
+        summary_stats.loc[rows_to_percent] = summary_stats.loc[rows_to_percent] * 100
+
+        print(summary_stats.round(2))
+
         print("\nWin rates excluding NaN:")
-        print(event_returns_df[return_cols].apply(lambda col: (col.dropna() > 0).mean()))
+
+        win_rates = event_returns_df[return_cols].apply(
+            lambda col: (col.dropna() > 0).mean()
+        ) * 100
+        print(win_rates.round(2).astype(str) + "%")
+
+        # Benchmark-adjusted returns
+
+        spy_prices_df = load_prices_from_r2(tickers=["SPY"]) #local R2 stored locally
+        if spy_prices_df.empty:
+            print("No price data found for SPY, cannot calculate benchmark-adjusted returns")
+        else:
+            spy_events = purchase_events.copy()
+            spy_events["join_ticker"] = "SPY"
+            spy_returns_df = build_event_returns(spy_events, spy_prices_df, horizons=[1, 5, 20, 60, 90])
+
+            for h in [1, 5, 20, 60, 90]:
+                stock_col = f"fwd_return_{h}d"
+                spy_col = f"spy_return_{h}d"
+                abnormal_col = f"abnormal_return_{h}d"
+
+                event_returns_df[spy_col] = spy_returns_df[stock_col].values
+                event_returns_df[abnormal_col] = event_returns_df[stock_col] - event_returns_df[spy_col]
+
+            abnormal_cols = [f"abnormal_return_{h}d" for h in[1, 5, 20, 60, 90]]  
+
+            print("\n Summary of abnormal returns")
+            abnormal_summary = event_returns_df[abnormal_cols].describe()
+            rows_to_percent = abnormal_summary.index != "count"
+            abnormal_summary.loc[rows_to_percent] = abnormal_summary[rows_to_percent] * 100
+            print(abnormal_summary.round(2))
+
+            print("\nSPY-adjusted win rates excluding NaN:")
+            abnormal_win_rates = event_returns_df[abnormal_cols].apply(
+            lambda col: (col.dropna() > 0).mean()) * 100
+            print(abnormal_win_rates.round(2).astype(str) + "%")
+
+
         
-        print((event_returns_df[return_cols] > 0).mean())  
-
-
+         
 
         #  Save event returns dataset 
         for ticker, group in event_returns_df.groupby("join_ticker"):
