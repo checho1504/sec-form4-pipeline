@@ -161,6 +161,81 @@ ticker_col: str = "join_ticker") -> pd.DataFrame:
 
     return events
 
+def get_baseline_returns(prices_df: pd.DataFrame, events_df: pd.DataFrame, horizons: list[int] | None = None,
+                         method:str = "spy", event_date_col: str = "event_price_date", n_random_draws: int = 100, random_seed: int = 42) -> pd.DataFrame:
+    
+    """calculates baseline returns for a set of events using the chosen method: 'SPY': SPY return over the same event window" & 
+            'random_days': average. same-ticker returns for a random trading days  """
+    
+    if horizons is None:
+        horizons = [1, 5, 20, 60, 90]
+    method = method.lower()
+
+    if method == "spy":
+        baseline_events = events_df.copy()
+        baseline_events["join_ticker"] = "SPY"
+
+        baseline_returns = build_event_returns(baseline_events, prices_df, horizons=horizons, event_date_col=event_date_col)
+
+        rename_map = {f"fwd_return_{h}d": f"baseline_return_{h}d" for h in horizons}
+        baseline_returns = baseline_returns.rename(columns=rename_map)
+
+        return baseline_returns[[f"baseline_return_{h}d" for h in horizons]]
+    
+    elif method == "random_days":
+        rng = np.random.default_rng(random_seed)
+        price_index = _build_price_index(prices_df) 
+        result = pd.DataFrame(index=events_df.index)
+        for h in horizons:
+            result[f"baseline_return_{h}d"] = np.nan 
+
+        for ticker, group in events_df.groupby("join_ticker"):
+            if ticker not in price_index:
+                continue
+
+            dates, closes = price_index[ticker]
+            n = len(dates)
+
+            for h in horizons:
+                max_start_idx = n - h - 1
+                if max_start_idx < 0:
+                    continue
+                # for each event in tiicker group, averga n random_draws, random-day retunrs 
+
+                for idx in group.index:
+                    start_idxs = rng.integers(0, max_start_idx + 1, size=n_random_draws)
+                    end_idxs = start_idxs + h
+
+                    start_prices = closes[start_idxs]
+                    end_prices = closes[end_idxs]
+
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        draws = (end_prices / start_prices) - 1
+                    draws = draws[~np.isnan(draws) & (start_prices != 0)]
+
+                    if len(draws) > 0:
+                        result.loc[idx, f"baseline_return_{h}d"] = draws.mean()
+
+        return result
+
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+def summarize_abnormal_returns(event_returns_df: pd.DataFrame, abnormal_cols: list[str], label: str) -> None:
+    """Print a describe()-style summary and win rates for a set of abnormal-return columns."""
+
+    print(f"\nSummary of {label} abnormal returns")
+    summary = event_returns_df[abnormal_cols].describe()
+    rows_to_percent = summary.index != "count"
+    summary.loc[rows_to_percent] = summary.loc[rows_to_percent] * 100
+    print(summary.round(2))
+
+    print(f"\n{label} win rates excluding NaN:")
+    win_rates = event_returns_df[abnormal_cols].apply(lambda col: (col.dropna() > 0).mean()) * 100
+    print(win_rates.round(2).astype(str) + "%")
+
+
+
 def sumarize_returns_by_transaction_code(event_returns_df: pd.DataFrame, horizons: list[int] = [1, 5, 20, 60, 90],) -> pd.DataFrame:
     """summarize by transaction code"""
     summary_rows = []
@@ -194,6 +269,7 @@ def sumarize_returns_by_transaction_code(event_returns_df: pd.DataFrame, horizon
 
         
 if __name__ == "__main__":
+    HORIZONS = [1, 5, 20, 60, 90]
     events_df = load_events_from_r2()
 
     if events_df.empty:
@@ -268,20 +344,20 @@ if __name__ == "__main__":
         print(f"\nForward returns computed for {len(event_returns_df)} purchase events")
 
         print("\nNaN counts per horizon (full dataset):")
-        for h in [1, 5, 20, 60, 90]:
+        for h in HORIZONS:
             col = f"fwd_return_{h}d"
             print(f"{col}: {event_returns_df[col].isna().sum()} / {len(event_returns_df)}")
 
         return_cols = [f"fwd_return_{h}d" for h in [1, 5, 20, 60, 90]]
 
         p_only_summary = pd.DataFrame({
-        "horizon_days": [1, 5, 20, 60, 90],
+        "horizon_days": HORIZONS,
         "valid_return_count": [event_returns_df[f"fwd_return_{h}d"].count() for h in [1, 5, 20, 60, 90]],
         "mean_return_pct": [event_returns_df[f"fwd_return_{h}d"].mean() * 100 for h in [1, 5, 20, 60, 90]],
         "median_return_pct": [event_returns_df[f"fwd_return_{h}d"].median() * 100 for h in [1, 5, 20, 60, 90]],
         "win_rate_pct": [
             (event_returns_df[f"fwd_return_{h}d"].dropna() > 0).mean() * 100
-            for h in [1, 5, 20, 60, 90]
+            for h in HORIZONS
         ],
     })
 
@@ -309,35 +385,34 @@ if __name__ == "__main__":
         if spy_prices_df.empty:
             print("No price data found for SPY, cannot calculate benchmark-adjusted returns")
         else:
-            spy_events = purchase_events.copy()
-            spy_events["join_ticker"] = "SPY"
-            spy_returns_df = build_event_returns(spy_events, spy_prices_df, horizons=[1, 5, 20, 60, 90])
+            baseline_df = get_baseline_returns(spy_prices_df, purchase_events, horizons=[1, 5, 20, 60, 90], method="spy",)
+
 
             for h in [1, 5, 20, 60, 90]:
                 stock_col = f"fwd_return_{h}d"
-                spy_col = f"spy_return_{h}d"
+                baseline_col = f"baseline_return_{h}d"
                 abnormal_col = f"abnormal_return_{h}d"
 
-                event_returns_df[spy_col] = spy_returns_df[stock_col].values
-                event_returns_df[abnormal_col] = event_returns_df[stock_col] - event_returns_df[spy_col]
+                event_returns_df[baseline_col] = baseline_df[baseline_col].reindex(event_returns_df.index)
+                event_returns_df[abnormal_col] = event_returns_df[stock_col] - event_returns_df[baseline_col]
 
-            abnormal_cols = [f"abnormal_return_{h}d" for h in[1, 5, 20, 60, 90]]  
+            abnormal_cols = [f"abnormal_return_{h}d" for h in HORIZONS]  
 
-            print("\n Summary of abnormal returns")
-            abnormal_summary = event_returns_df[abnormal_cols].describe()
-            rows_to_percent = abnormal_summary.index != "count"
-            abnormal_summary.loc[rows_to_percent] = abnormal_summary[rows_to_percent] * 100
-            print(abnormal_summary.round(2))
+            summarize_abnormal_returns(event_returns_df, abnormal_cols, "SPY-adjusted")
 
-            print("\nSPY-adjusted win rates excluding NaN:")
-            abnormal_win_rates = event_returns_df[abnormal_cols].apply(
-            lambda col: (col.dropna() > 0).mean()) * 100
-            print(abnormal_win_rates.round(2).astype(str) + "%")
+        # Random-days baseline (method 2)
 
+        random_baseline_df = get_baseline_returns(all_prices_df, purchase_events, horizons=[1, 5, 20, 60, 90],method="random_days",
+        )
 
-        
+        for h in HORIZONS:
+            event_returns_df[f"random_baseline_return_{h}d"] = random_baseline_df[f"baseline_return_{h}d"].reindex(event_returns_df.index)
+            event_returns_df[f"random_abnormal_return_{h}d"] = event_returns_df[f"fwd_return_{h}d"] - event_returns_df[f"random_baseline_return_{h}d"]
+
+        random_abnormal_cols = [f"random_abnormal_return_{h}d" for h in [1, 5, 20, 60, 90]]
+
+        summarize_abnormal_returns(event_returns_df, random_abnormal_cols, "Random-days-adjusted")
          
-
         #  Save event returns dataset 
         for ticker, group in event_returns_df.groupby("join_ticker"):
             returns_path = write_parquet(group, ticker, dataset="event_returns")
@@ -356,6 +431,26 @@ if __name__ == "__main__":
             "fwd_return_90d",
         ]].sample(min(15, len(event_returns_df)), random_state=42))
 
+        # event returns vs baselines, per horizon ---
+
+        comparison_rows = []
+        for h in HORIZONS:
+            comparison_rows.append({
+                "horizon_days": h,
+                "raw_mean_pct": event_returns_df[f"fwd_return_{h}d"].mean() * 100,
+                "raw_win_rate_pct": (event_returns_df[f"fwd_return_{h}d"].dropna() > 0).mean() * 100,
+                "spy_abnormal_mean_pct": event_returns_df[f"abnormal_return_{h}d"].mean() * 100,
+                "spy_win_rate_pct": (event_returns_df[f"abnormal_return_{h}d"].dropna() > 0).mean() * 100,
+                "random_abnormal_mean_pct": event_returns_df[f"random_abnormal_return_{h}d"].mean() * 100,
+                "random_win_rate_pct": (event_returns_df[f"random_abnormal_return_{h}d"].dropna() > 0).mean() * 100,
+            })
+
+        comparison_df = pd.DataFrame(comparison_rows)
+
+        print("\nSide-by-side comparison: raw vs. SPY-adjusted vs. random-days-adjusted, per horizon")
+        print(comparison_df.round(2))
+
+        
         
 
 
