@@ -48,16 +48,14 @@ CIKS_CORE = {
     "BA": "0000012927",
     "GE": "0000040545",
 }
+# Everything we ever want in the dataset
 
-CIKS_SP500_100 = dict(list(CIKS_SP500_ALL.items())[:100])
+CIKS_ALL = {**CIKS_CORE, **CIKS_SP500_ALL}
 
+CIKS = CIKS_ALL
 
-CIKS = {
-    ticker: cik
-    for ticker, cik in CIKS_SP500_100.items()
-    if ticker not in CIKS_CORE
-}
 
 PROJECT_DIR = Path(__file__).parent
 TEMP_DIR = PROJECT_DIR / "temp_xml_storage"
 OUTPUT_DIR = PROJECT_DIR / "data" / "parquet"
+
