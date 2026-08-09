@@ -7,6 +7,7 @@ import pandas as pd
 from config import CIKS
 from storage import write_parquet, upload_to_r2, get_r2_client
 import numpy as np
+from scipy import stats
 
 def load_prices_from_r2(tickers: list[str] | None = None) -> pd.DataFrame:
     """load combined price data from R2"""
@@ -266,6 +267,43 @@ def sumarize_returns_by_transaction_code(event_returns_df: pd.DataFrame, horizon
 
     return pd.concat(summary_rows, ignore_index=True)
 
+def run_significance_test(event_returns_df: pd.DataFrame, return_col: str, ticker_col: str='join_ticker', n_bootstrap: int=5000,
+                          random_seed: int=42) -> dict :
+    """tests whether the mean return in 'return_col' is significantly different from 0. a one-sample t-test and a block bootstrap 
+    by ticker(tickers with multiple events are treated as one unit in the resampling)"""
+    data = event_returns_df[[ticker_col, return_col]].dropna()
+
+    # t-test (assumes independence)
+    t_stat, p_value = stats.ttest_1samp(data[return_col], popmean=0)
+
+    # block bootstrap by ticker
+
+    rng = np.random.default_rng(random_seed)
+    grouped = {t :g[return_col].to_numpy() for t, g in data.groupby(ticker_col)} # selects only one ticker event 
+    tickers = list(grouped.keys())
+
+    boot_means = []
+
+    for _ in range(n_bootstrap):
+        # draw tickers with replacement
+        sampled_tickers = rng.choice(tickers, size=len(tickers), replace=True)
+        sampled_values = np.concatenate([grouped[t] for t in sampled_tickers])
+        boot_means.append(sampled_values.mean())
+    boot_means = np.array(boot_means)
+    ci_lower, ci_upper = np.percentile(boot_means, [2.5, 97.5])
+
+    return {
+        "n_events": len(data),
+        "n_tickers": len(tickers),
+        "mean_return_pct": data[return_col].mean() * 100,
+        "t_stat": t_stat,
+        "p_value": p_value,
+        "bootstrap_ci_low_pct": ci_lower * 100,
+        "bootstrap_ci_high_pct": ci_upper * 100,
+        "bootstrap_significant": not (ci_lower <= 0 <= ci_upper),
+    }
+
+
 
         
 if __name__ == "__main__":
@@ -430,6 +468,40 @@ if __name__ == "__main__":
             "fwd_return_60d",
             "fwd_return_90d",
         ]].sample(min(15, len(event_returns_df)), random_state=42))
+
+        #Phase 3E: significance testing, per horizon 
+
+        significance_rows = []
+        for h in HORIZONS:
+            spy_result = run_significance_test(event_returns_df, return_col=f"abnormal_return_{h}d")
+            spy_result["horizon_days"] = h
+            spy_result["method"] = "spy_adjusted"
+            significance_rows.append(spy_result)
+
+            random_result = run_significance_test(event_returns_df, return_col=f"random_abnormal_return_{h}d")
+            random_result["horizon_days"] = h
+            random_result["method"] = "random_days_adjusted"
+            significance_rows.append(random_result)
+
+        significance_df = pd.DataFrame(significance_rows)
+        significance_df = significance_df.rename(columns={"p_value": "t_test_p_value"})
+
+        print("\nSignificance test results (t-test + block bootstrap by ticker), per horizon:")
+        print(
+            significance_df[
+                [
+                    "method",
+                    "horizon_days",
+                    "n_events",
+                    "n_tickers",
+                    "mean_return_pct",
+                    "t_test_p_value",
+                    "bootstrap_ci_low_pct",
+                    "bootstrap_ci_high_pct",
+                    "bootstrap_significant",
+                ]
+            ].round(3)
+        )
 
         # event returns vs baselines, per horizon ---
 
