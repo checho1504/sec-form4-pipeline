@@ -11,10 +11,17 @@ Output: an event-level dataset for later forward-return analysis.
 import pandas as pd
 from config import OUTPUT_DIR
 
-TICKER_ALIASES = { 
+TICKER_ALIASES = {
     "GOOG": ["GOOG", "GOOGL"],
+    "GOOGL": ["GOOGL", "GOOG"],
+    "APD": ["APD", "APD, SOMEOTHER"],
     "BNY": ["BNY", "BK"],
     "BF-B": ["BF-B", "BFA", "BFB", "BFA, BFB"],
+    "LEN": ["LEN", "LEN-B", "LEN, LEN-B"],
+    "FOXA": ["FOXA", "FOX", "FOXA, FOX"],
+    "FOX": ["FOX", "FOXA", "FOXA, FOX"],
+    "NWSA": ["NWSA", "NWS", "NWSA, NWS"],
+    "NWS": ["NWS", "NWSA", "NWSA, NWS"],
 }
 
 def join_form4_prices(form4_df: pd.DataFrame, price_df: pd.DataFrame, date_col: str = "filing_date") -> pd.DataFrame:
