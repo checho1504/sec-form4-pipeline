@@ -17,3 +17,4 @@ def build_price_index(prices_df: pd.DataFrame) -> dict:
             grp["adjClose"].to_numpy(dtype="float64"),
         )
     return price_index
+

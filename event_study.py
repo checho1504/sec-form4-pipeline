@@ -6,6 +6,7 @@ import io
 import pandas as pd
 from config import CIKS
 from storage import write_parquet, upload_to_r2, get_r2_client
+from price_utils import build_price_index as _build_price_index
 import numpy as np
 from scipy import stats
 
@@ -94,23 +95,6 @@ def count_duplicate_purchase_rows(purchase_events: pd.DataFrame) -> int:
     duplicate_count = purchase_events.duplicated(subset=dedupe_cols).sum()
 
     return duplicate_count
-
-
-def _build_price_index(prices_df: pd.DataFrame) -> dict:
-    """Pre-sorts price data per ticker into numpy arrays for fast
-    positional lookups.
-    """
-    prices = prices_df.copy()
-    prices["date"] = pd.to_datetime(prices["date"])
-    prices = prices.dropna(subset=["date", "adjClose"])
-
-    price_index = {}
-    for ticker, grp in prices.sort_values("date").groupby("join_ticker", sort=False):
-        price_index[ticker] = (
-            grp["date"].to_numpy(),
-            grp["adjClose"].to_numpy(dtype="float64"),
-        )
-    return price_index
 
 
 def build_event_returns(events_df: pd.DataFrame, prices_df: pd.DataFrame, horizons: list[int] = [1, 5, 20, 60, 90], event_date_col: str = "event_price_date", 
