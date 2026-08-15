@@ -6,6 +6,8 @@ from storage import upload_to_r2, write_parquet
 from event_study import load_events_from_r2, load_prices_from_r2
 from price_utils import build_price_index
 
+MAX_PLAUSIBLE_PRICE_PER_SHARE = 50_000.0
+
 def add_lag(events_df: pd.DataFrame) -> pd.DataFrame:
     """Calculates the lag(if any) between the transaciton date and the filing date"""
     df = events_df.copy()
@@ -135,6 +137,143 @@ def build_lookback_features(events_df: pd.DataFrame, prices_df: pd.DataFrame, ev
 
     return events
 
+def build_insider_activity_panel(
+    events_df: pd.DataFrame,
+    window_days: int = 30,
+    ticker_col: str = "join_ticker",
+    date_col: str = "transaction_date",
+    value_col: str = "transaction_value",
+    owner_col: str = "reporting_owner_name",
+    code_col: str = "transaction_code",
+    acq_disposed_col: str = "transaction_acquired_disposed_code",
+    price_col: str = "transaction_price_per_share",
+    cluster_threshold: int = 3,
+) -> pd.DataFrame:
+    """
+    Build rolling insider activity features by ticker/date.
+
+    For each ticker and transaction date, looks back window_days and summarizes:
+    - net insider buying
+    - number of unique insiders
+    - whether cluster buying happened
+    - buy/sell imbalance
+
+    Only counts real open-market buys/sells with sane transaction prices.
+    """
+    required_columns = [
+        ticker_col,
+        date_col,
+        value_col,
+        owner_col,
+        code_col,
+        acq_disposed_col,
+        price_col,
+    ]
+
+    missing_columns = [col for col in required_columns if col not in events_df.columns]
+
+    if missing_columns:
+        raise ValueError(f"Missing required columns: {missing_columns}")
+
+    df = events_df.copy()
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce").fillna(0.0)
+
+    code = df[code_col].fillna("").astype(str).str.upper().str.strip()
+    acq_disposed = df[acq_disposed_col].fillna("").astype(str).str.upper().str.strip()
+    price = pd.to_numeric(df[price_col], errors="coerce")
+
+    # Keep corrupted price fields out of panel signals.
+    sane_price = price.between(0, MAX_PLAUSIBLE_PRICE_PER_SHARE, inclusive="neither")
+    bad_price_count = int((price > MAX_PLAUSIBLE_PRICE_PER_SHARE).sum())
+
+    if bad_price_count:
+        print(f"Warning: excluding {bad_price_count} implausible transaction prices from panel")
+
+    df["is_buy"] = (
+        (code == "P")
+        & (acq_disposed == "A")
+        & sane_price
+        & (df[value_col] > 0)
+    )
+
+    df["is_sell"] = (
+        (code == "S")
+        & (acq_disposed == "D")
+        & sane_price
+        & (df[value_col] > 0)
+    )
+
+    df["buy_value"] = np.where(df["is_buy"], df[value_col], 0.0)
+    df["sell_value"] = np.where(df["is_sell"], df[value_col], 0.0)
+
+    df = df.dropna(subset=[date_col, ticker_col])
+
+    panel_rows = []
+
+    for ticker, group in df.groupby(ticker_col, sort=False):
+        group = group.sort_values(date_col)
+
+        dates = group[date_col].to_numpy()
+        buy_values = group["buy_value"].to_numpy()
+        sell_values = group["sell_value"].to_numpy()
+        is_buy = group["is_buy"].to_numpy()
+        owners = group[owner_col].fillna("Unknown").astype(str).to_numpy()
+
+        # One summary row per ticker/date.
+        panel_dates = np.unique(dates)
+
+        # Find rolling window boundaries.
+        window_start = panel_dates - np.timedelta64(window_days, "D")
+        start_idx = np.searchsorted(dates, window_start, side="left")
+        end_idx = np.searchsorted(dates, panel_dates, side="right")
+
+        for panel_date, lo, hi in zip(panel_dates, start_idx, end_idx):
+            window_buy = buy_values[lo:hi].sum()
+            window_sell = sell_values[lo:hi].sum()
+            window_owners = owners[lo:hi]
+            window_is_buy = is_buy[lo:hi]
+
+            net_insider_buying = window_buy - window_sell
+            insider_count = len(np.unique(window_owners))
+
+            buying_insiders = np.unique(window_owners[window_is_buy])
+            cluster_buying = len(buying_insiders) >= cluster_threshold
+
+            denom = window_buy + window_sell
+
+            buy_sell_imbalance = (
+                (window_buy - window_sell) / denom
+                if denom != 0
+                else np.nan
+            )
+
+            panel_rows.append(
+                {
+                    ticker_col: ticker,
+                    "panel_date": panel_date,
+                    "net_insider_buying": net_insider_buying,
+                    "insider_count": insider_count,
+                    "cluster_buying": cluster_buying,
+                    "buy_sell_imbalance": buy_sell_imbalance,
+                }
+            )
+
+    panel_df = pd.DataFrame(
+        panel_rows,
+        columns=[
+            ticker_col,
+            "panel_date",
+            "net_insider_buying",
+            "insider_count",
+            "cluster_buying",
+            "buy_sell_imbalance",
+        ],
+    )
+
+    return panel_df    
+
 #________________________________________________________________________________________________________________________________#
 
 if __name__ == "__main__":
@@ -147,32 +286,197 @@ if __name__ == "__main__":
         print("No events loaded")
         raise SystemExit
 
+    if prices_df.empty:
+        print("No prices loaded")
+        raise SystemExit
+
+    # ------------------------------------------------------------
+    # Inspect known suspicious raw PSX window
+    # ------------------------------------------------------------
+
+    worst_ticker = "PSX"
+    worst_date = pd.Timestamp("2026-07-21")
+    window_start = worst_date - pd.Timedelta(days=30)
+
+    transaction_dates = pd.to_datetime(
+        events_df["transaction_date"],
+        errors="coerce",
+    )
+
+    raw_psx_window = events_df[
+        (events_df["join_ticker"] == worst_ticker)
+        & (transaction_dates > window_start)
+        & (transaction_dates <= worst_date)
+    ].copy()
+
+    print("\nRaw PSX rows in suspicious 30-day window:")
+    print(
+        raw_psx_window[
+            [
+                "reporting_owner_name",
+                "transaction_date",
+                "transaction_code",
+                "transaction_acquired_disposed_code",
+                "transaction_price_per_share",
+                "transaction_value",
+                "source_file",
+            ]
+        ]
+        .sort_values("transaction_value")
+        .to_string(index=False)
+    )
+
+    # ------------------------------------------------------------
+    # Build event-level signal features
+    # ------------------------------------------------------------
+
     signals_df = add_lag(events_df)
     signals_df = add_role_flag(signals_df)
     signals_df = add_open_market_flags(signals_df)
     signals_df = build_lookback_features(signals_df, prices_df)
 
-    print(signals_df)
+    print("\nSignals dataset:")
+    print(f"Rows: {len(signals_df)}")
+    print(f"Columns: {len(signals_df.columns)}")
+
     print("\nSample rows:")
-    print(signals_df[["issuer_ticker", "reporting_owner_name", "transaction_date","filing_date","filing_lag_days","transaction_code","transaction_value",]].head(20))
+    print(
+        signals_df[
+            [
+                "issuer_ticker",
+                "reporting_owner_name",
+                "transaction_date",
+                "filing_date",
+                "filing_lag_days",
+                "transaction_code",
+                "transaction_value",
+            ]
+        ].head(20)
+    )
+
     print("\nRole flag distribution:")
     print(signals_df["role_flag"].value_counts(dropna=False))
 
-
-    OPEN_MARKET_SAMPLE_COLS = [
-    "issuer_ticker", "reporting_owner_name", "filing_date", "transaction_date",
-    "transaction_code", "transaction_acquired_disposed_code",
-    "transaction_price_per_share", "transaction_value"]
-
     print("\nOpen-market flag counts:")
-    print(signals_df[["is_open_market_purchase", "is_open_market_sale", "open_market_only"]].sum())
+    print(
+        signals_df[
+            [
+                "is_open_market_purchase",
+                "is_open_market_sale",
+                "open_market_only",
+            ]
+        ].sum()
+    )
+
+    open_market_sample_cols = [
+        "issuer_ticker",
+        "reporting_owner_name",
+        "filing_date",
+        "transaction_date",
+        "transaction_code",
+        "transaction_acquired_disposed_code",
+        "transaction_price_per_share",
+        "transaction_value",
+    ]
 
     print("\nSample open-market rows:")
-    print(signals_df.loc[signals_df["open_market_only"], OPEN_MARKET_SAMPLE_COLS].head(20))
+    print(
+        signals_df.loc[
+            signals_df["open_market_only"],
+            open_market_sample_cols,
+        ].head(20)
+    )
 
-    print(signals_df[["prior_30d_returns", "prior_30d_volatility", "distance_from_52w_high"]].isna().sum())
-    print("Volatility describe:", signals_df["prior_30d_volatility"].describe())
+    lookback_cols = [
+        "prior_30d_returns",
+        "prior_30d_volatility",
+        "distance_from_52w_high",
+    ]
+
+    print("\nLookback feature missing values:")
+    print(signals_df[lookback_cols].isna().sum())
+
+    print("\nVolatility describe:")
+    print(signals_df["prior_30d_volatility"].describe())
 
     print("\nLookback features across all tickers:")
-    print(signals_df[["issuer_ticker", "reporting_owner_name", "event_price_date", "event_adj_close",
-     "prior_30d_returns", "prior_30d_volatility", "distance_from_52w_high"]].sample(30, random_state=42))
+    print(
+        signals_df[
+            [
+                "issuer_ticker",
+                "reporting_owner_name",
+                "event_price_date",
+                "event_adj_close",
+                "prior_30d_returns",
+                "prior_30d_volatility",
+                "distance_from_52w_high",
+            ]
+        ].sample(30, random_state=42)
+    )
+
+    # ------------------------------------------------------------
+    # Build panel-level insider activity features
+    # ------------------------------------------------------------
+
+    insider_panel_df = build_insider_activity_panel(signals_df)
+
+    if insider_panel_df.empty:
+        print("No insider activity data available")
+        raise SystemExit
+
+    print("\nInsider activity panel sample:")
+    print(insider_panel_df.head(20))
+
+    print("\nCluster buying counts:")
+    print(insider_panel_df["cluster_buying"].value_counts(dropna=False))
+
+    print("\nInsider activity panel summary stats:")
+    print(
+        insider_panel_df[
+            [
+                "net_insider_buying",
+                "insider_count",
+                "buy_sell_imbalance",
+            ]
+        ].describe()
+    )
+
+    print("\nLargest absolute net insider buying panel rows after sanity filter:")
+    largest_abs_panel_rows = (
+        insider_panel_df
+        .assign(abs_net_insider_buying=insider_panel_df["net_insider_buying"].abs())
+        .sort_values("abs_net_insider_buying", ascending=False)
+        .head(10)
+    )
+
+    print(
+        largest_abs_panel_rows[
+            [
+                "join_ticker",
+                "panel_date",
+                "net_insider_buying",
+                "insider_count",
+                "cluster_buying",
+                "buy_sell_imbalance",
+            ]
+        ]
+    )
+
+    print("\nPSX panel rows around suspicious date after sanity filter:")
+    print(
+        insider_panel_df[
+            (insider_panel_df["join_ticker"] == "PSX")
+            & (
+                pd.to_datetime(insider_panel_df["panel_date"])
+                >= pd.Timestamp("2026-07-01")
+            )
+            & (
+                pd.to_datetime(insider_panel_df["panel_date"])
+                <= pd.Timestamp("2026-07-31")
+            )
+        ]
+    )
+
+  
+
+    
