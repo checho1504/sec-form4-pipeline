@@ -1,14 +1,9 @@
 import numpy as np
 import pandas as pd
-
-MAX_PLAUSIBLE_PRICE_PER_SHARE = 50_000.0
-MAX_PLAUSIBLE_SHARES = 1_000_000_000
+from price_utils import MAX_PLAUSIBLE_PRICE_PER_SHARE, MAX_PLAUSIBLE_SHARES
 
 def clean_dataframe(rows: list) -> pd.DataFrame:
-    """Converts raw Form 4 rows into typed columns: parses dates, coerces numeric
-    and boolean fields, and computes transaction_value as shares * price. Rows with
-    an implausible price-per-share or share count are nulled out before the value
-    calculation runs, so a single corrupted field can't silently blow up transaction_value."""
+    """Converts raw Form 4 rows into typed columns: parses dates"""
 
     required_columns = [
         "transaction_date", "period_of_report", "filing_date",
@@ -35,7 +30,11 @@ def clean_dataframe(rows: list) -> pd.DataFrame:
         df["shares_owned_following_transaction"], errors="coerce"
     )
 
-    implausible_price = df["transaction_price_per_share"] > MAX_PLAUSIBLE_PRICE_PER_SHARE
+    # Preserve as-filed values before any nulling, for audit/debugging.
+    df["raw_transaction_price_per_share"] = df["transaction_price_per_share"]
+    df["raw_transaction_shares"] = df["transaction_shares"]
+
+    implausible_price = df["transaction_price_per_share"].abs() > MAX_PLAUSIBLE_PRICE_PER_SHARE
     implausible_shares = df["transaction_shares"].abs() > MAX_PLAUSIBLE_SHARES
     df["implausible_transaction_fields"] = implausible_price | implausible_shares
 
