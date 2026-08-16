@@ -7,6 +7,7 @@ def get_text(parent, tag):
     return el.text if el is not None else None
 
 
+
 def get_nested_text(parent, path):
     current = parent
     for tag in path:

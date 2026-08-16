@@ -8,6 +8,7 @@ from fetcher import fetch_form4s, download_xml
 from parser import parse_form4
 from transform import clean_dataframe
 from storage import write_parquet, upload_to_r2
+import sys 
 
 # Make sure the temp folder exists before saving XML files.
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -21,11 +22,11 @@ def delete_downloaded_xml(downloaded_filings):
             print(f"Deleted local XML: {xml_file.name}")
 
 
-def run_pipeline(ticker: str, cik: str):
+def run_pipeline(ticker: str, cik: str, force: bool = False):
     # Load the filings already processed avoiding duplicates
 
     processed_accessions = load_processed_accessions()
-    print(f"\n-Running pipeline for {ticker}")
+    print(f"\n-Running pipeline for {ticker}" + (" [FORCE REBUILD]" if force else ""))
 
     filings = fetch_form4s(cik)
 
@@ -33,7 +34,7 @@ def run_pipeline(ticker: str, cik: str):
     for f in filings[:50]: 
         accession = f["accessionNumber"]
 
-        if accession in processed_accessions:
+        if accession in processed_accessions and not force:
             print(f"Skipping already processed filing: {accession}")
             continue
 
@@ -117,10 +118,18 @@ def run_pipeline(ticker: str, cik: str):
 
 
 if __name__ == "__main__":
-    # Run the pipeline for every ticker in the config file.
-    try:
-        for ticker, cik in CIKS.items():
-            run_pipeline(ticker, cik)
+    target_tickers = [t.upper() for t in sys.argv[1:]] # for debugging
 
+    try:
+        if target_tickers:
+            for ticker in target_tickers:
+                cik = CIKS.get(ticker)
+                if cik is None:
+                    print(f"Unknown ticker: {ticker}")
+                    continue
+                run_pipeline(ticker, cik, force=True)
+        else:
+            for ticker, cik in CIKS.items():
+                run_pipeline(ticker, cik)
     finally:
-        save_processed_accessions() #uploads back to R2 after all tickers finish
+        save_processed_accessions()

@@ -5,8 +5,7 @@ import pandas as pd
 from storage import upload_to_r2, write_parquet 
 from event_study import load_events_from_r2, load_prices_from_r2
 from price_utils import build_price_index
-
-MAX_PLAUSIBLE_PRICE_PER_SHARE = 50_000.0
+from price_utils import MAX_PLAUSIBLE_SHARES, MAX_PLAUSIBLE_PRICE_PER_SHARE, build_price_index
 
 def add_lag(events_df: pd.DataFrame) -> pd.DataFrame:
     """Calculates the lag(if any) between the transaciton date and the filing date"""
@@ -191,20 +190,28 @@ def build_insider_activity_panel(
     if bad_price_count:
         print(f"Warning: excluding {bad_price_count} implausible transaction prices from panel")
 
+    shares = pd.to_numeric(df.get("transaction_shares"), errors="coerce")
+    sane_shares = shares.between(0, MAX_PLAUSIBLE_SHARES, inclusive="neither")
+
+    bad_shares_count = int((shares > MAX_PLAUSIBLE_SHARES).sum())
+    if bad_shares_count:
+        print(f"Warning: excluding {bad_shares_count} implausible share counts from panel")
+
+    dedup_keys = [ticker_col, date_col, code_col, acq_disposed_col, price_col,"transaction_shares",]
+
+    before = len(df)
+    df = df.drop_duplicates(subset=dedup_keys, keep="first")
+    after = len(df)
+
+    if before != after:
+        print(f"Warning: collapsed {before - after} duplicate joint-filer rows "
+          f"(same transaction reported by multiple affiliated owners)")
+
     df["is_buy"] = (
-        (code == "P")
-        & (acq_disposed == "A")
-        & sane_price
-        & (df[value_col] > 0)
-    )
-
+    (code == "P") & (acq_disposed == "A") & sane_price & sane_shares & (df[value_col] > 0))
     df["is_sell"] = (
-        (code == "S")
-        & (acq_disposed == "D")
-        & sane_price
-        & (df[value_col] > 0)
-    )
-
+    (code == "S") & (acq_disposed == "D") & sane_price & sane_shares & (df[value_col] > 0))
+    
     df["buy_value"] = np.where(df["is_buy"], df[value_col], 0.0)
     df["sell_value"] = np.where(df["is_sell"], df[value_col], 0.0)
 
