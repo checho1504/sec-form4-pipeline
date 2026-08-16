@@ -7,7 +7,6 @@ trading day to account for days when market is closed. Best for forward-return a
 
 Output: an event-level dataset for later forward-return analysis.
 """
-
 import pandas as pd
 from config import OUTPUT_DIR
 
@@ -51,12 +50,20 @@ def join_form4_prices(form4_df: pd.DataFrame, price_df: pd.DataFrame, date_col: 
 
 
 if __name__ == "__main__":
+    import sys
     from config import CIKS
     from storage import write_parquet, upload_to_r2
 
+    target_tickers = [t.upper() for t in sys.argv[1:]]
+    tickers_to_run = target_tickers if target_tickers else list(CIKS.keys())
+
+    if target_tickers:
+        print(f"Targeted rebuild: {tickers_to_run}")
+
+
     all_joined = []
 
-    for ticker in CIKS:
+    for ticker in tickers_to_run:
         form4_path = OUTPUT_DIR / f"form4_{ticker.lower()}.parquet"
         price_path = OUTPUT_DIR / f"prices_{ticker.lower()}.parquet"
         if not form4_path.exists() or not price_path.exists():
