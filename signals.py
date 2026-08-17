@@ -446,18 +446,7 @@ if __name__ == "__main__":
         .head(10)
     )
 
-    print(
-        largest_abs_panel_rows[
-            [
-                "join_ticker",
-                "panel_date",
-                "net_insider_buying",
-                "insider_count",
-                "cluster_buying",
-                "buy_sell_imbalance",
-            ]
-        ]
-    )
+    print(largest_abs_panel_rows[["join_ticker","panel_date","net_insider_buying","insider_count","cluster_buying","buy_sell_imbalance",]])
 
     print("\nTop insider purchase activity (gross buy value, purchases only):")
     top_purchases = (
@@ -495,20 +484,17 @@ if __name__ == "__main__":
     # Save signals + insider activity panel to R2, one file per ticker
     # ------------------------------------------------------------
 
-    # print("\nSaving signals and insider activity panel to R2...")
+    print("\nSaving signals and insider activity panel to R2...")
+    for ticker, group in signals_df.groupby("join_ticker", sort=False):
+         parquet_path = write_parquet(group, ticker, dataset="signals")
+         upload_to_r2(parquet_path, ticker, dataset="signals")
 
-    # for ticker, group in signals_df.groupby("join_ticker", sort=False):
-    #     parquet_path = write_parquet(group, ticker, dataset="signals")
-    #     upload_to_r2(parquet_path, ticker, dataset="signals")
+    for ticker, group in insider_panel_df.groupby("join_ticker", sort=False):
+         parquet_path = write_parquet(group, ticker, dataset="insider_panel")
+         upload_to_r2(parquet_path, ticker, dataset="insider_panel")
 
-    # for ticker, group in insider_panel_df.groupby("join_ticker", sort=False):
-    #     parquet_path = write_parquet(group, ticker, dataset="insider_panel")
-    #     upload_to_r2(parquet_path, ticker, dataset="insider_panel")
-
-    # print(
-    #     f"Saved {signals_df['join_ticker'].nunique()} tickers to signals/, "
-    #     f"{insider_panel_df['join_ticker'].nunique()} tickers to insider_panel/"
-    # )
+    print(f"Saved {signals_df['join_ticker'].nunique()} tickers to signals/, "
+    f"{insider_panel_df['join_ticker'].nunique()} tickers to insider_panel/")
   
 
     
