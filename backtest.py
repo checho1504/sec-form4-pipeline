@@ -7,6 +7,7 @@ import pandas as pd
 from event_study import load_events_from_r2, load_prices_from_r2
 from storage import write_parquet, upload_to_r2
 
+
 HOLDING_DAYS = 20  # best time window as far as significance
 MAX_FILING_LAG_DAYS = 5                            
 MIN_PURCHASE_VALUE = 0.0
@@ -230,22 +231,46 @@ if __name__ == "__main__":
     print("Running insider purchase backtest...")
 
     trades_df, summary_df = run_backtest()
+
     if trades_df.empty:
         print("No trades generated")
         raise SystemExit
 
+    # Save trade-level backtest results locally and upload them to R2.
+    trades_path = write_parquet(trades_df, "all", dataset="backtest_trades")
+    upload_to_r2(trades_path, "all", dataset="backtest_trades")
+    print(f"Saved backtest trades to R2: {trades_path}")
+
     print("\nBacktest summary:")
     print(summary_df.to_string(index=False))
 
-    sample_cols = ["ticker", "signal_date", "entry_date", "exit_date", "trade_return", "benchmark_return",
-                   "abnormal_return", "signal_purchase_value", "signal_insider_count", "cluster_buying_at_signal", "role_flag"]
-    top_worst_cols = [c for c in sample_cols if c != "benchmark_return"]
+    display_cols = [
+        "ticker", "signal_date", "entry_date", "exit_date",
+        "trade_return", "benchmark_return", "abnormal_return",
+        "signal_purchase_value", "signal_insider_count",
+        "cluster_buying_at_signal",
+    ]
+
+    top_worst_cols = [
+        "ticker", "signal_date", "entry_date", "exit_date",
+        "trade_return", "abnormal_return", "signal_purchase_value",
+    ]
 
     print("\nSample trades:")
-    print(trades_df[sample_cols].head(30).to_string(index=False))
+    print(trades_df[display_cols].head(30).to_string(index=False))
 
     print("\nTop 20 trades:")
-    print(trades_df.sort_values("trade_return", ascending=False)[top_worst_cols].head(20).to_string(index=False))
+    print(
+        trades_df
+        .sort_values("trade_return", ascending=False)[top_worst_cols]
+        .head(20)
+        .to_string(index=False)
+    )
 
     print("\nWorst 20 trades:")
-    print(trades_df.sort_values("trade_return", ascending=True)[top_worst_cols].head(20).to_string(index=False))
+    print(
+        trades_df
+        .sort_values("trade_return", ascending=True)[top_worst_cols]
+        .head(20)
+        .to_string(index=False)
+    )
