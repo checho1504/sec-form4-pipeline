@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from backtest import run_backtest, prepare_prices
 from event_study import load_prices_from_r2
-
+from storage import write_parquet, upload_to_r2
 
 STARTING_CAPITAL = 100_000.0
 POSITION_SIZE = 5_000.0
@@ -477,26 +477,29 @@ if __name__ == "__main__":
         run_portfolio_backtest()
     )
 
+    # Save portfolio backtest outputs locally and upload them to R2.
+    r2_outputs = {
+        "portfolio_equity": daily_equity_df,
+        "portfolio_closed_trades": closed_trades_df,
+        "portfolio_skipped_trades": skipped_trades_df,
+        "portfolio_summary": summary_df,
+    }
+
+    for dataset, df in r2_outputs.items():
+        path = write_parquet(df, "all", dataset=dataset)
+        upload_to_r2(path, "all", dataset=dataset)
+        print(f"Saved {dataset} to R2: {path}")
+
     print("\nPortfolio summary:")
     print(summary_df.to_string(index=False))
 
+    closed_cols = [
+        "ticker", "entry_date", "exit_date",
+        "pnl", "net_trade_return", "signal_purchase_value",
+    ]
+
     print("\nClosed trades sample:")
-    print(
-        closed_trades_df[
-            [
-                "ticker",
-                "entry_date",
-                "exit_date",
-                "entry_price",
-                "exit_price",
-                "pnl",
-                "net_trade_return",
-                "signal_purchase_value",
-            ]
-        ]
-        .head(20)
-        .to_string(index=False)
-    )
+    print(closed_trades_df[closed_cols].head(20).to_string(index=False))
 
     print("\nSkipped trade reasons:")
     if skipped_trades_df.empty:
@@ -504,7 +507,12 @@ if __name__ == "__main__":
     else:
         print(skipped_trades_df["reason"].value_counts().to_string())
 
+    equity_cols = [
+        "date", "cash", "positions_value", "equity",
+        "open_positions", "benchmark_equity", "drawdown",
+    ]
+
     print("\nEquity curve sample:")
-    print(daily_equity_df.tail(10).to_string(index=False))
+    print(daily_equity_df[equity_cols].tail(10).to_string(index=False))
 
     plot_equity_curve(daily_equity_df)
