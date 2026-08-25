@@ -7,7 +7,7 @@ st.subheader("Tracking SEC Form 4 insider purchases and testing whether they pre
 
 st.markdown(
     """
-Corporate insiders — CEOs, CFOs, board members, major shareholders — have to file a **Form 4**
+Corporate insiders such as  CEOs, CFOs, board members, major shareholders, etc. have to file a **Form 4**
 whenever they buy or sell shares of their own company. That data is public, timely, and
 potentially useful as a research signal.
 
@@ -18,9 +18,11 @@ event study → signal engineering → backtest → (you are here)**
 
 ### Pages
 
-- **📈 Backtest Results** — did the strategy actually make money? Portfolio equity curve vs. SPY,
-  trade-level stats, drawdown.
-- More pages coming: Signal Leaderboard, Company View, Live Feed.
+- **📰 Live Feed** — the raw stream of recent insider trades. Filter by ticker, role, buy/sell code, or dollar amount.
+- **🏆 Signal Leaderboard** — who's buying the most right now, ranked by dollar size. Flags when 3+ insiders are buying the same stock at once (that's a cluster).
+- **🏢 Company View** — pick one company and see its price chart with every insider buy/sell plotted right on top.
+- **🔬 Event Study** — the actual research question: does insider buying predict the stock going up afterward? Tested with real stats (t-tests + bootstrap), not just vibes.
+- **📈 Backtest Results** — if I'd actually traded on this signal with real money and real limits (starting cash, max positions, fees), would I have beaten just buying SPY?
 
 ---
 *Data refreshes hourly from Cloudflare R2. Built by [checho1504](https://github.com/checho1504) —
