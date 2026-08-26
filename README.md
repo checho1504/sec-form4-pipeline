@@ -1,466 +1,287 @@
-# Follow the Money: Insider Buying Event Study
+# Follow the Money: Insider Buying Event Study & Backtest
 
-A Python data engineering and research project that pulls SEC Form 4 insider trading filings, filters for high-signal open-market purchases, joins them with adjusted stock prices, measures forward returns, compares them against baselines, and tests whether the results are statistically meaningful.
+A Python project that pulls SEC Form 4 insider trading filings, filters for open market purchases, joins them with stock prices, runs an event study, builds trading signals, and backtests a portfolio strategy. Results are shown on a live dashboard.
 
-The main question:
+Main question: when insiders buy their own company's stock on the open market, does the stock tend to do better afterward? And can that actually be turned into a strategy?
 
-> When insiders buy their own company's stock on the open market, does the stock tend to outperform afterward?
+What I found: open market insider purchases show a statistically significant short term return, strongest around the 20 trading day mark. That signal fades by 60 to 90 days. When I turned it into an actual portfolio strategy with position limits and transaction costs, it underperformed SPY on total return but had a much smoother ride (Sharpe 1.16, max drawdown 7.75% vs SPY's deeper drops).
 
-Current finding:
-
-> In this dataset, open-market insider purchases show statistically significant short-term abnormal returns, especially around the 20-trading-day horizon. The signal does not appear reliable at 60 to 90 days.
+Live dashboard: (add your Streamlit link here)
 
 ---
 
-## Features
+## What it does
 
-- Downloads Form 4 filings directly from SEC EDGAR
-- Parses messy Form 4 XML into structured transaction rows
-- Filters for open-market insider purchases
-- Stores cleaned Parquet datasets in Cloudflare R2
-- Fetches adjusted daily stock prices
-- Joins insider events to the next available trading day after filing date
-- Computes 1, 5, 20, 60, and 90 trading-day forward returns
-- Compares event returns against:
-  - SPY benchmark returns
-  - Random same-stock trading-day baselines
-- Calculates abnormal returns
-- Runs significance testing using:
-  - one-sample t-test
-  - ticker-level block bootstrap
-- Outputs summary tables for raw, SPY-adjusted, and random-days-adjusted returns
+- Downloads Form 4 filings from SEC EDGAR for the S&P 500
+- Parses the XML into clean transaction rows
+- Filters down to open market purchases only (code P, insider used their own money)
+- Checks for bad values before they can throw off calculations
+- Stores everything as Parquet in Cloudflare R2
+- Pulls daily adjusted stock prices and lines each filing up with the next trading day
+- Runs an event study: forward returns at 1, 5, 20, 60, and 90 days, compared to SPY and to random days, tested for significance
+- Builds signal features like cluster buying, insider role, and momentum
+- Backtests the strategy two ways, a simple trade level test and a capital constrained portfolio simulation
+- Runs on a schedule through GitHub Actions
+- Feeds a live Streamlit dashboard
 
----
+## Why I built it
 
-## Why I Built This
-
-I kept seeing headlines like:
-
-> CEO buys $2M of their own stock.
-
-Those headlines are usually treated like obvious good news, but I wanted to test that idea with data.
-
-So I built this project to answer:
+I kept seeing headlines like "CEO buys $2M of their own stock" treated as automatically good news. I wanted to actually test that instead of just assuming it. So I set out to answer:
 
 - Do stocks go up after insider purchases?
 - Do they beat the market?
-- Do they beat their own normal/random behavior?
-- Is the pattern statistically significant or just noise?
+- Is it a real pattern or just noise?
+- If it's real, can you actually trade it and make money after costs?
 
-This is a student research project, not investment advice.
+This is a student project. Not investment advice.
 
----
+## How the pipeline works
 
-## Current Dataset
-
-Latest event-study run:
-
-| Metric | Value |
-|---|---:|
-| Total Form 4 event rows | 44,820 |
-| Unique tickers with Form 4 events | 498 |
-| Clean open-market purchase events | 842 |
-| Tickers with purchase events | 174 |
-| Duplicate purchase rows | 0 |
-
-The pipeline is now close to a broad S&P 500-scale universe, though some tickers may still be missing due to unavailable event files, ticker changes, aliases, or data quality issues.
-
----
-
-## High-Signal Purchase Filter
-
-The main signal currently used is:
-
-```text
-transaction_code == "P"
-and transaction_acquired_disposed_code == "A"
-and transaction_price_per_share > 0
+```
+SEC EDGAR
+  Download Form 4 XML filings
+  Parse into transaction rows
+  Clean data, check for bad values, compute transaction value
+  Save to Parquet, upload to Cloudflare R2
+  Pull market data, join filings to next trading day
+  Event study (forward returns, baselines, significance tests)
+  Signal engineering (cluster buying, role flags, momentum)
+  Backtesting (trade level and portfolio level)
+  Streamlit dashboard, connected live to R2
+  Whole thing runs on GitHub Actions
 ```
 
-This captures open-market purchases where insiders used their own money.
+Storage layout in R2:
 
-It removes grants, awards, gifts, zero-price transactions, and other non-cash events.
+```
+r2://follow the money/
+  form4/ticker=AAPL/form4_aapl.parquet
+  prices/ticker=AAPL/prices_aapl.parquet
+  events/ticker=AAPL/events_aapl.parquet
+  signals/ticker=AAPL/signals_aapl.parquet
+  insider_panel/ticker=AAPL/insider_panel_aapl.parquet
+  metadata/processed_accession.txt
+```
 
----
+## The purchase filter
 
-## How the Pipeline Works
+```
+transaction_code == "P"
+transaction_acquired_disposed_code == "A"
+transaction_price_per_share > 0
+```
 
-1. **Fetch filings**
+This keeps open market purchases where the insider used their own money, and drops grants, awards, gifts, and anything with no real price attached.
 
-   Pull Form 4 filings from SEC EDGAR using company CIKs.
+One rule runs through the whole pipeline: the event date is the filing date, not the transaction date. That's when the market actually learns about the trade, so it's the date you have to use if you want to avoid lookahead bias.
 
-2. **Parse XML**
+## Event study results
 
-   Form 4 filings are XML documents. The parser extracts transaction fields like insider name, issuer, transaction date, filing date, shares, price, transaction code, and ownership details.
+Dataset: 44,820 total Form 4 rows across 498 tickers, narrowed down to 842 clean open market purchase events across 174 tickers, 2022 to present.
 
-3. **Clean and validate**
+Raw returns:
 
-   The pipeline converts dates and numeric columns, calculates transaction value, validates issuer CIK/ticker fields, and removes rows that do not match the expected issuer.
+| Horizon | Events | Mean Return | Median Return | Win Rate |
+|---|---|---|---|---|
+| 1 day | 836 | 0.87% | 0.87% | 69.62% |
+| 5 days | 823 | 1.00% | 0.75% | 56.38% |
+| 20 days | 802 | 3.23% | 3.42% | 67.83% |
+| 60 days | 609 | 5.32% | 3.36% | 56.81% |
+| 90 days | 535 | 6.96% | 3.59% | 59.44% |
 
-4. **Store in R2**
+Raw returns just tell you if the stock went up. They don't account for the market moving too.
 
-   Cleaned Form 4 data is stored as Parquet files in Cloudflare R2.
-
-5. **Fetch market data**
-
-   Daily adjusted OHLCV price data is pulled for each ticker.
-
-6. **Join filings to prices**
-
-   Each filing is matched to the next available trading day after the filing date.
-
-   I use `filing_date`, not `transaction_date`, because the filing date is when the market can actually react to the information.
-
-7. **Compute forward returns**
-
-   For every open-market purchase event, the pipeline calculates returns after:
-
-   - 1 trading day
-   - 5 trading days
-   - 20 trading days
-   - 60 trading days
-   - 90 trading days
-
-8. **Compare against baselines**
-
-   Raw returns are not enough because the whole market may have gone up.
-
-   So the event returns are compared against:
-
-   - **SPY baseline:** did the stock beat the broad market?
-   - **Random-days baseline:** did the stock beat its own average random-period behavior?
-
-9. **Run significance tests**
-
-   The project tests whether abnormal returns are statistically different from zero using:
-
-   - a one-sample t-test
-   - a ticker-level block bootstrap
-
----
-
-## Event Study Results
-
-### Raw Purchase Returns
-
-| Horizon | Valid Events | Mean Return | Median Return | Win Rate |
-|---:|---:|---:|---:|---:|
-| 1 day | 836 | +0.87% | +0.87% | 69.62% |
-| 5 days | 823 | +1.00% | +0.75% | 56.38% |
-| 20 days | 802 | +3.23% | +3.42% | 67.83% |
-| 60 days | 609 | +5.32% | +3.36% | 56.81% |
-| 90 days | 535 | +6.96% | +3.59% | 59.44% |
-
-Raw returns answer:
-
-> Did the stock go up after the insider purchase?
-
-But raw returns can be misleading because they do not adjust for market conditions.
-
----
-
-## Baseline-Adjusted Results
-
-### SPY-Adjusted Abnormal Returns
+SPY adjusted returns:
 
 | Horizon | Mean Abnormal Return | Median Abnormal Return | Win Rate vs SPY |
-|---:|---:|---:|---:|
-| 1 day | +0.87% | +0.79% | 68.14% |
-| 5 days | +0.88% | +0.65% | 56.69% |
-| 20 days | +2.39% | +2.59% | 61.67% |
+|---|---|---|---|
+| 1 day | 0.87% | 0.79% | 68.14% |
+| 5 days | 0.88% | 0.65% | 56.69% |
+| 20 days | 2.39% | 2.59% | 61.67% |
 | 60 days | -0.56% | -1.68% | 44.13% |
 | 90 days | -0.67% | -5.52% | 39.44% |
 
-SPY-adjusted abnormal return means:
-
-```text
-stock forward return - SPY forward return
-```
-
-This answers:
-
-> Did the stock outperform the broad market after the insider purchase?
-
----
-
-### Random-Days-Adjusted Abnormal Returns
+Random days adjusted returns:
 
 | Horizon | Mean Abnormal Return | Median Abnormal Return | Win Rate vs Random Days |
-|---:|---:|---:|---:|
-| 1 day | +0.81% | +0.83% | 67.46% |
-| 5 days | +0.76% | +0.43% | 53.95% |
-| 20 days | +2.29% | N/A | 65.59% |
-| 60 days | +2.98% | +0.88% | 51.89% |
-| 90 days | +3.37% | +0.75% | 51.40% |
+|---|---|---|---|
+| 1 day | 0.81% | 0.83% | 67.46% |
+| 5 days | 0.76% | 0.43% | 53.95% |
+| 20 days | 2.29% | N/A | 65.59% |
+| 60 days | 2.98% | 0.88% | 51.89% |
+| 90 days | 3.37% | 0.75% | 51.40% |
 
-Random-days abnormal return means:
+To test if any of this is real and not just a few big movers, I ran a ticker level block bootstrap along with a one sample t test. A normal bootstrap can get skewed by companies that show up a lot, so the block bootstrap resamples by ticker to check if the pattern holds across companies.
 
-```text
-stock return after insider purchase - average return from random same-stock periods
-```
-
-This answers:
-
-> Did the stock perform better after insider purchases than it usually does during random periods in its own history?
-
----
-
-## Significance Testing
-
-The ticker-level block bootstrap is important because some tickers appear much more often than others.
-
-A normal row-level bootstrap could overweight companies with many events. The block bootstrap resamples by ticker, which asks:
-
-> Does the signal still hold across companies, or is it being carried by a few heavily represented tickers?
-
-### Bootstrap Results
-
-| Horizon | SPY-Adjusted Significant? | Random-Days Significant? | Interpretation |
-|---:|---:|---:|---|
-| 1 day | Yes | Yes | Strong short-term reaction |
+| Horizon | SPY Adjusted Significant | Random Days Significant | Interpretation |
+|---|---|---|---|
+| 1 day | Yes | Yes | Strong short term reaction |
 | 5 days | Yes | Yes | Positive but weaker |
 | 20 days | Yes | Yes | Strongest result |
-| 60 days | No | No | Not statistically reliable |
-| 90 days | No | No | Not statistically reliable |
+| 60 days | No | No | Not reliable |
+| 90 days | No | No | Not reliable |
 
-### Confidence Intervals
+Bottom line: insider buying looks like a real short term signal here, strongest around 20 trading days. It doesn't look like a good long term buy and hold signal.
 
-| Method | Horizon | Events | Bootstrap 95% CI | Significant? |
-|---|---:|---:|---:|---|
-| SPY-adjusted | 1d | 835 | +0.580% to +1.227% | Yes |
-| Random-days-adjusted | 1d | 836 | +0.506% to +1.183% | Yes |
-| SPY-adjusted | 5d | 822 | +0.224% to +1.587% | Yes |
-| Random-days-adjusted | 5d | 823 | +0.074% to +1.543% | Yes |
-| SPY-adjusted | 20d | 801 | +1.049% to +3.717% | Yes |
-| Random-days-adjusted | 20d | 802 | +0.596% to +4.171% | Yes |
-| SPY-adjusted | 60d | 605 | -3.678% to +3.480% | No |
-| Random-days-adjusted | 60d | 609 | -1.243% to +7.977% | No |
-| SPY-adjusted | 90d | 535 | -4.882% to +5.004% | No |
-| Random-days-adjusted | 90d | 535 | -1.263% to +9.561% | No |
+## Signal engineering
 
-The clearest finding so far:
+Turned the raw transactions into usable features:
 
-> Open-market insider purchases are followed by statistically significant short-term abnormal returns, with the strongest evidence around the 20-trading-day horizon.
-
-The longer 60-day and 90-day windows do not hold up after uncertainty testing.
-
----
-
-## Side-by-Side Comparison
-
-| Horizon | Raw Mean | Raw Win Rate | SPY Win Rate | Random-Days Mean | Random-Days Win Rate |
-|---:|---:|---:|---:|---:|---:|
-| 1 day | +0.87% | 69.62% | 68.14% | +0.81% | 67.46% |
-| 5 days | +1.00% | 56.38% | 56.69% | +0.76% | 53.95% |
-| 20 days | +3.23% | 67.83% | 61.67% | +2.29% | 65.59% |
-| 60 days | +5.32% | 56.81% | 44.13% | +2.98% | 51.89% |
-| 90 days | +6.96% | 59.44% | 39.44% | +3.37% | 51.40% |
-
----
-
-## Main Takeaway
-
-The raw numbers look strong at longer horizons, but the adjusted results tell a more careful story.
-
-The 1-day, 5-day, and especially 20-day horizons show statistically significant abnormal returns.
-
-The 60-day and 90-day horizons look positive in raw returns, but they do not appear statistically reliable after adjusting for baselines and using ticker-level block bootstrap confidence intervals.
-
-In plain English:
-
-> Insider buying appears to have a real short-term signal in this dataset, but it does not look like a simple long-term buy-and-hold signal.
-
----
-
-## Limitations
-
-- This is not investment advice.
-- This is a research project, not a trading strategy.
-- The dataset may still have missing tickers or incomplete coverage.
-- Some companies appear more often than others.
-- Some results may change as more historical filings are added.
-- The current study uses event rows, not fully aggregated signal-level events.
-- No beta-adjusted or factor-model abnormal return has been added yet.
-- Longer horizons have fewer valid observations because newer events do not have enough future price history.
-
----
-
-## What's Next
-
-Phase 3 answered the first research question:
-
-> Are open-market insider purchases followed by statistically significant abnormal returns?
-
-The next step is to turn the event-study results into stronger research signals and eventually test whether those signals could support a simple strategy.
-
----
-
-## Phase 4 — Signal Engineering
-
-Phase 4 turns raw insider transactions into more useful research features.
-
-Planned features:
-
-| Feature | Description |
+| Feature | What it is |
 |---|---|
-| `net_insider_buying` | Buy value minus sell value over a rolling window |
-| `cluster_buying` | Multiple insiders buying the same stock in the same week |
-| `role_flag` | CEO / CFO / Director / 10% owner |
-| `open_market_only` | Filter to open-market purchases/sales |
-| `transaction_value` | Shares × price per share |
-| `transaction_value_vs_market_cap` | Trade size relative to company size |
-| `insider_count` | Distinct insiders buying in a rolling window |
-| `buy_sell_imbalance` | Buy value ÷ total buy/sell value |
-| `distance_from_52w_high` | Distance below 52-week high at filing |
-| `prior_30d_return` | Stock momentum before filing |
-| `prior_volatility` | Risk environment before filing |
-| `filing_lag` | Gap between transaction date and filing date |
+| net_insider_buying | Buy value minus sell value in a rolling window |
+| gross_buy_value | Buy value only, not offset by sells |
+| cluster_buying | Multiple insiders buying the same stock in the same week |
+| role_flag | CEO, CFO, Director, or 10% owner |
+| open_market_only | Filters to open market buys and sells |
+| transaction_value | Shares times price |
+| insider_count | Distinct insiders active in the window |
+| buy_sell_imbalance | Buy value over total buy plus sell value |
+| distance_from_52w_high | How far below the 52 week high at filing time |
+| prior_30d_return | Momentum going into the filing |
+| prior_30d_volatility | How volatile the stock was before the filing |
+| filing_lag_days | Gap between the trade and when it was filed |
 
-Questions Phase 4 should answer:
+Every feature checks for implausible values before it gets aggregated, and duplicate filings from affiliated owners get collapsed so the same trade doesn't get counted twice.
 
-- Are large purchases more predictive than small purchases?
-- Are CEO/CFO purchases stronger than director purchases?
-- Does cluster buying matter?
-- Does the signal work better after a stock has fallen?
-- Does buying near 52-week lows behave differently than buying near highs?
+## Backtest results
 
----
+**Trade level (backtest.py):** enter the next trading day after a clean purchase signal is filed, hold for 20 trading days, compare to SPY over the same window. Filing lag capped at 5 days, one signal per ticker per filing date, joint filers deduped.
 
-## Phase 5 — Backtesting Engine
+**Portfolio level (portfolio.py):** a more realistic version on top of those trades. $100,000 starting capital, $5,000 per position, max 20 open positions at once, transaction costs at 0.10% on both entry and exit. When signals collide, the bigger purchase wins, and the same ticker gets skipped if it's already held.
 
-Phase 5 asks:
+| Metric | Strategy | SPY Buy and Hold |
+|---|---|---|
+| Total return | 16.4% | 36.9% |
+| CAGR | 8.1% | |
+| Sharpe ratio | 1.16 | |
+| Max drawdown | 7.75% | deeper |
+| Excess return vs benchmark | 20.5pp behind | |
 
-> If I traded based on these signals using only information available at the time, would the strategy have worked?
+The strategy trails SPY on raw return, but it gets there with a much smoother path. A few reasons why, based on digging into it:
 
-Strategies to test:
+- About 41% of signals got skipped because of the position cap or because that ticker was already held
+- The $5,000 position size doesn't scale up as the account grows
+- There were stretches with idle cash when not enough signals came through
 
-- Buy after cluster open-market insider purchases
-- Buy after large open-market insider purchases
-- Buy when multiple officers/directors buy in the same rolling window
-- Hold for 20 / 60 / 90 trading days
-- Compare against SPY or sector ETF
-- Include estimated transaction costs
-- Use `filing_date`, not `transaction_date`, to avoid lookahead bias
+That's the finding as it stands. I looked into these but didn't chase them further given the scope of the project.
 
-Backtest outputs:
+## Two real bugs I found and fixed
 
-| Output | Meaning |
-|---|---|
-| Cumulative return | Strategy performance over time |
-| Benchmark return | SPY or sector ETF return over the same period |
-| Win rate | Percentage of winning trades |
-| Average / median return | Typical trade outcome |
-| Max drawdown | Worst peak-to-trough loss |
-| Sharpe ratio | Return adjusted for volatility |
-| Trade count | Number of trades |
-| Return by holding period | 20d vs 60d vs 90d comparison |
+**Bug 1, ticker and CIK mix up.** Pulling data for JPM was also pulling in filings where JPM showed up as a shareholder in some other company, not as the actual filer. Big banks hold stakes all over the place, and the code wasn't checking that the issuer CIK in the filing actually matched the CIK I was collecting for. I fixed it in parser.py and main.py so mismatched rows get dropped before they're ever saved, instead of filtering them out later in join.py. Tested it live: JPM dropped one leaked row, BAC dropped 37 (mostly closed end funds), TSLA correctly dropped zero.
 
----
+**Bug 2, bad values and double counted trades.** PSX had a wildly wrong transaction value in the signals panel. Digging into it turned up two more issues at the same time. NRG and ROL had billion dollar net insider buying numbers that looked wrong but turned out to be real trades counted twice. FANG had a huge number too but that one checked out as a real block sale.
 
-## Phase 6 — Dashboard and Alerts
+Three separate causes:
 
-Planned dashboard views:
+1. PSX: a decimal point got dropped in a filed price, an as filed SEC typo, not something my code did.
+2. NRG and ROL: the same trade gets filed twice under SEC rules, once by the individual and once by their holding company or trust, so the dollar value was getting summed twice.
+3. FANG: confirmed real, a $2.15B block sale filed correctly once. Left alone.
 
-1. **Live Feed** — recent insider transactions filterable by ticker, role, code, and value
-2. **Company View** — single-ticker insider activity with price overlay and buy/sell markers
-3. **Signal Leaderboard** — strongest current buying signals and cluster events
-4. **Backtest Results** — strategy vs benchmark, return distribution, and holding-period comparison
-5. **Alerts** — new open-market purchases, cluster buying, and large transactions relative to company size
+Fix: transform.py now nulls out implausible prices and share counts before transaction value gets calculated, so one bad field can't blow up an aggregate later. Raw values are kept in separate columns for auditing. price_utils.py holds a single shared set of plausibility thresholds instead of two copies that could drift apart. signals.py adds the same guard for share counts and dedupes trades filed by more than one affiliated owner. main.py and join.py can now rebuild a single ticker without reprocessing all 500+.
 
----
+Still open: WRB and TSLA show a similar pattern to NRG and ROL in the gross buy value view. Haven't root caused it yet, worth checking before trusting those numbers for position sizing.
 
-## Project Structure
+## Dashboard
 
-```text
-main.py                  runs the Form 4 fetch, parse, clean, and store pipeline
-fetcher.py               talks to SEC EDGAR and downloads filings
-parser.py                parses Form 4 XML into structured rows
-transform.py             cleans and types parsed data
-storage.py               handles local Parquet files and Cloudflare R2 uploads
-market_data.py           fetches daily adjusted stock prices
-fetch_spy_prices.py      fetches SPY benchmark prices
-join.py                  matches insider transactions to market prices
-event_study.py           forward returns, baselines, abnormal returns, and significance testing
-config.py                ticker lists and shared settings
-sp500_ciks.py            generated ticker-to-CIK lookup
-build_sp500_ciks.py      generates the S&P 500 CIK lookup file
-processed_filings.py     tracks already-processed filings
-inspect_parquet.py       quick script for checking saved Parquet data
-requirements.txt         Python dependencies
-README.md                project overview and findings
+Built in Streamlit, connected live to R2, refreshes hourly.
+
+1. Backtest Results, strategy vs benchmark, drawdown chart, skipped trade breakdown
+2. Event Study, forward returns, abnormal returns, significance tests by horizon
+3. Live Feed, recent Form 4 transactions, filterable by ticker, role, code, value, and date
+4. Signal Leaderboard, strongest current buying signals and cluster events
+5. Company View, single ticker insider activity with price overlay
+
+One thing worth noting from the build: the pipeline files assumed they'd all sit in one folder and import each other directly. Once I copied them into dashboard/lib, those imports broke. Fixed it by adding lib's own path to sys.path in the adapter files instead of touching the original pipeline code. Small lesson about how file location and imports end up tied together.
+
+## Project structure
+
+```
+main.py                 runs the pipeline, supports single ticker rebuilds
+config.py                CIK list, paths, constants
+fetcher.py                talks to SEC EDGAR, downloads XML
+parser.py                parses XML into transaction rows
+transform.py              cleans data, checks for bad values
+price_utils.py            shared price index and plausibility thresholds
+join.py                   joins Form 4 data to prices
+event_study.py            forward returns, baselines, significance tests
+signals.py                signal engineering
+backtest.py                trade level backtest
+portfolio.py               portfolio level backtest
+storage.py                writes Parquet, uploads to R2
+processed_filings.py       tracks processed filings
+inspect_parquet.py         checks saved data
+build_sp500_ciks.py        builds the S&P 500 ticker to CIK list
+sp500_ciks.py              generated ticker to CIK lookup
+dashboard/                 Streamlit app
+requirements.txt
+README.md
+.env                      local credentials, not committed
 ```
 
-Local/generated files that should not be committed:
+## Getting started
 
-```text
-.env
-data/
-temp_xml_storage/
-processed_accession.txt
-__pycache__/
-*.parquet
-*.csv
+Clone it:
+
+```
+git clone https://github.com/checho1504/sec form4 pipeline.git
+cd sec form4 pipeline
 ```
 
----
+Install requirements:
 
-## Getting Started
-
-### 1. Clone the repo
-
-```bash
-git clone https://github.com/checho1504/sec-form4-pipeline.git
-cd sec-form4-pipeline
 ```
-
-### 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-### 3. Create a `.env` file
+Make a .env file with your Cloudflare R2 and Tiingo credentials:
 
-This project uses Cloudflare R2 and Tiingo.
-
-```text
-R2_ENDPOINT_URL=...
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-R2_BUCKET_NAME=...
-TIINGO_API_KEY=...
+```
+R2_ENDPOINT_URL=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET_NAME=
+TIINGO_API_KEY=
 ```
 
-Do not commit `.env`.
+Run the pipeline in order:
 
-### 4. Run the pipeline
-
-Run scripts in this order:
-
-```bash
+```
 python main.py
 python market_data.py
 python fetch_spy_prices.py
 python join.py
 python event_study.py
+python signals.py
+python backtest.py
+python portfolio.py
 ```
 
----
+You can rebuild just one ticker without touching the rest:
 
-## Important SEC Note
+```
+python main.py PSX
+python join.py PSX
+```
 
-SEC EDGAR requires a real User-Agent header on every request.
+Run the dashboard locally:
 
-This is configured in `config.py`.
+```
+cd dashboard
+streamlit run Home.py
+```
 
-If you fork this project, update the User-Agent with your own name/email or project contact information.
+More setup details in dashboard/README.md.
 
----
+## SEC note
+
+SEC EDGAR requires a real User Agent header on every request, set in config.py. If you fork this, swap in your own contact info.
+
+## Limitations
+
+This is a research project, not a trading strategy, and not investment advice. Fills are assumed at the daily close with no slippage. No adjustment for liquidity or trading volume when sizing positions. Not sure if the price data includes delisted tickers, so there may be some survivorship bias. No out of sample testing was done. The WRB and TSLA pattern mentioned above still needs to be looked into. Numbers may shift as more filings get added over time.
+
 
 ## Disclaimer
 
-This project is for research and education only.
-
-It is not financial advice, investment advice, or a recommendation to buy or sell any security.
-
-The results are historical, preliminary, and may change as the dataset expands or the methodology improves.
+This project is for research and education. It is not financial advice or a recommendation to buy or sell anything. The results are historical and may change as the dataset grows or the methodology improves.
