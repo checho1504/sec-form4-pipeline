@@ -6,7 +6,7 @@ Main question: when insiders buy their own company's stock on the open market, d
 
 What I found: open market insider purchases show a statistically significant short term return, strongest around the 20 trading day mark. That signal fades by 60 to 90 days. When I turned it into an actual portfolio strategy with position limits and transaction costs, it underperformed SPY on total return but had a much smoother ride (Sharpe 1.16, max drawdown 7.75% vs SPY's deeper drops).
 
-Live dashboard: (add your Streamlit link here)
+Live dashboard: https://sec-form4-pipeline-zrth7rzakv5pdgkhximw6y.streamlit.app/
 
 ---
 
